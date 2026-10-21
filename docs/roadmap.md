@@ -4,8 +4,8 @@ Stages are sequential; do not start Stage 3+ until Stage 1 is confirmed against 
 
 ## Stage 1 — Wispr MCP (highest risk)
 
-- [ ] `login` command: discovery → DCR → Authorization Code + PKCE → store refresh token (fallback: device flow).
-- [ ] MCP Streamable HTTP client: `initialize`, `tools/list`, `tools/call`.
+- [x] `login` command: discovery → DCR → Authorization Code + PKCE → store refresh token.
+- [x] MCP Streamable HTTP client: `initialize`, `tools/list`, `tools/call` (`bot tools`, `bot call`).
 - [ ] Record real `search_meetings` / `get_meeting` responses as sanitized fixtures in `internal/wispr/testdata/`.
 - [ ] Resolve every **VERIFY** item in [wispr-mcp.md](wispr-mcp.md) and update the doc.
 - Exit: list of recent meetings printed by CLI, token survives restart and refresh.

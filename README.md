@@ -2,7 +2,7 @@
 
 A small Go service that watches your [Wispr Flow](https://wisprflow.ai) Notetaker for newly finished meetings and sends a compact summary (key points, decisions, action items, link) to your personal Telegram chat. No manual steps after a call ends.
 
-> **Status:** design/documentation phase. Implementation starts with Stage 1 (Wispr MCP auth); see [docs/roadmap.md](docs/roadmap.md).
+> **Status:** Stage 1 in progress — Wispr OAuth login and MCP client work against the real server (`bot login`, `bot tools`, `bot call`). Telegram delivery and polling are not built yet; see [docs/roadmap.md](docs/roadmap.md).
 
 ## How it works
 
