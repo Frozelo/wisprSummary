@@ -26,6 +26,7 @@ type Topic struct {
 
 // Parsed is the structured content extracted from a summary.
 type Parsed struct {
+	Overview  string // Wispr's own one-paragraph recap that precedes the first heading
 	Topics    []Topic
 	Decisions []string
 	Tasks     []Task
@@ -67,7 +68,9 @@ type section struct {
 // Empty or unstructured input yields an empty Parsed.
 func Parse(summary string) Parsed {
 	var p Parsed
-	for _, s := range splitSections(summary) {
+	secs, intro := splitSections(summary)
+	p.Overview = intro
+	for _, s := range secs {
 		if len(s.items) == 0 {
 			continue
 		}
@@ -95,8 +98,10 @@ func (it item) full() string {
 	return it.text + " — " + strings.Join(it.subs, "; ")
 }
 
-func splitSections(md string) []section {
+// splitSections returns the sections plus the plain paragraph(s) before the first heading.
+func splitSections(md string) ([]section, string) {
 	var secs []section
+	var intro []string
 	cur := section{}
 	flush := func() {
 		if cur.heading != "" || len(cur.items) > 0 {
@@ -111,6 +116,11 @@ func splitSections(md string) []section {
 		}
 		m := itemRe.FindStringSubmatch(line)
 		if m == nil {
+			if len(secs) == 0 && cur.heading == "" && len(cur.items) == 0 {
+				if t := clean(line); t != "" {
+					intro = append(intro, t)
+				}
+			}
 			continue
 		}
 		text := clean(checkboxRe.ReplaceAllString(strings.TrimSpace(m[2]), ""))
@@ -126,7 +136,7 @@ func splitSections(md string) []section {
 		cur.items = append(cur.items, item{text: text})
 	}
 	flush()
-	return secs
+	return secs, strings.Join(intro, " ")
 }
 
 type kind int

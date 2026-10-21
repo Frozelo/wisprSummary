@@ -16,6 +16,7 @@ const (
 	maxLine        = 400 // a single bullet is never longer, so one always fits a message
 	maxDecisionsSm = 5
 	maxTitle       = 200
+	maxOverview    = 600
 )
 
 // Meeting is the input for one notification.
@@ -44,7 +45,7 @@ func Format(m Meeting, loc *time.Location) []string {
 		foot = []string{"", "<b>Материалы:</b>", `<a href="` + esc(m.ShareLink) + `">Заметка в Wispr Flow</a>`}
 	}
 
-	topics := topicLines(p.Topics)
+	topics := topicLines(p.Overview, p.Topics)
 	decisions := decisionLines(p.Decisions, 0)
 	tasks := taskLines(p.Tasks)
 
@@ -66,11 +67,26 @@ func Format(m Meeting, loc *time.Location) []string {
 	return pack(head, join(nil, decisions, tasks), foot)
 }
 
-func topicLines(ts []Topic) []string {
-	if len(ts) == 0 {
+// topicLines renders the recap. When Wispr wrote an intro paragraph it is the
+// recap and topics are listed by heading only; otherwise each topic shows its
+// first bullet.
+func topicLines(overview string, ts []Topic) []string {
+	if overview == "" && len(ts) == 0 {
 		return nil
 	}
 	out := []string{"", "<b>Краткие итоги:</b>"}
+	if overview != "" {
+		out = append(out, esc(trunc(overview, maxOverview)))
+		for i, t := range ts {
+			if i == maxTopics {
+				break
+			}
+			if t.Heading != "" {
+				out = append(out, "• "+esc(trunc(t.Heading, 120)))
+			}
+		}
+		return out
+	}
 	for i, t := range ts {
 		if i == maxTopics {
 			break

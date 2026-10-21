@@ -45,7 +45,7 @@ The image is a static binary on distroless (non-root); state lives in the `wispr
 
 No server needed for a trial: `.github/workflows/poll.yml` runs `bot run --once` every ~5 minutes (GitHub may start scheduled runs 5–15 minutes late) and keeps the state between runs in the Actions cache, **encrypted** with the `STATE_KEY` secret because the repository is public.
 
-Repository secrets: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `STATE_KEY` (any random string) and `WISPR_TOKEN_B64` (`base64 < data/wispr_token.json`, used only when there is no saved state). Optional repository variable: `TIMEZONE`.
+Repository secrets: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `STATE_KEY` (any random string) and `WISPR_TOKEN_B64` (`base64 < data/wispr_token.json`, used only when there is no saved state). Optional repository variables: `TIMEZONE`, `SELF_NAME`.
 
 ```bash
 gh workflow run poll.yml -f backfill_hours=24   # first run only: also send the last 24h
@@ -66,6 +66,7 @@ Notes: do not run the bot locally with the same Wispr session at the same time (
 | `BACKFILL_HOURS` | `0` | Meetings to send on first run |
 | `WISPR_MCP_URL` | `https://api.wisprflow.ai/connect/mcp` | MCP endpoint |
 | `TIMEZONE` | system local | IANA zone for the date in messages |
+| `SELF_NAME` | – | Replaces your Wispr account name in titles/summaries (Wispr writes it where you said "I") |
 | `LOG_LEVEL` | `info` | |
 
 ## Security

@@ -24,10 +24,11 @@ const goodSummary = "### Принятые решения\n- Делаем X\n\n##
 
 // fakeSource serves meetings newest-modified-first with offset cursors, like Wispr.
 type fakeSource struct {
-	mu        sync.Mutex
-	meetings  map[string]wispr.Meeting
-	getCalls  int
-	searchErr error
+	mu         sync.Mutex
+	meetings   map[string]wispr.Meeting
+	getCalls   int
+	searchErr  error
+	accountErr error
 }
 
 func newSource() *fakeSource { return &fakeSource{meetings: map[string]wispr.Meeting{}} }
@@ -61,6 +62,13 @@ func (f *fakeSource) SearchMeetings(_ context.Context, cursor string, limit int)
 		page.HasMore, page.NextCursor = true, strconv.Itoa(end)
 	}
 	return page, nil
+}
+
+func (f *fakeSource) AccountName(context.Context) (string, error) {
+	if f.accountErr != nil {
+		return "", f.accountErr
+	}
+	return "ONIPEDE CECILIA 1910005257", nil
 }
 
 func (f *fakeSource) GetMeeting(_ context.Context, id string) (wispr.Meeting, error) {
@@ -544,5 +552,47 @@ func TestPartialDeliverySurvivesProcessRestart(t *testing.T) {
 	}
 	if done, _ := e.st.IsProcessed(context.Background(), "big"); !done {
 		t.Fatal("not completed after restart")
+	}
+}
+
+const accountSummary = `Тестовая встреча: ONIPEDE CECILIA 1910005257 распределил задачи.
+
+### Распределение задач
+- ONIPEDE CECILIA 1910005257 берёт бэкенд-часть.
+
+### Следующие шаги
+- (Антон) Сделать дизайн
+`
+
+func TestSelfNameReplacesWisprAccountName(t *testing.T) {
+	e := newEnv(t)
+	e.svc.cfg.SelfName = "Иван"
+	e.tick(t, 0)
+	e.src.add("m1", t0.Add(time.Minute), true, accountSummary)
+	e.tick(t, 2*time.Minute)
+	if len(e.n.sent) != 1 {
+		t.Fatalf("sent %d", len(e.n.sent))
+	}
+	m := e.n.sent[0]
+	if strings.Contains(m, "ONIPEDE") || !strings.Contains(m, "Иван распределил задачи") {
+		t.Fatalf("account name not replaced:\n%s", m)
+	}
+}
+
+func TestSelfNameUnsetKeepsTextAndAccountErrorDoesNotBlock(t *testing.T) {
+	e := newEnv(t)
+	e.tick(t, 0)
+	e.src.add("m1", t0.Add(time.Minute), true, accountSummary)
+	e.tick(t, 2*time.Minute)
+	if len(e.n.sent) != 1 || !strings.Contains(e.n.sent[0], "ONIPEDE") {
+		t.Fatalf("text must be untouched without SELF_NAME: %q", e.n.sent)
+	}
+
+	e.svc.cfg.SelfName = "Иван"
+	e.src.accountErr = errors.New("wispr down")
+	e.src.add("m2", e.clock.Add(time.Minute), true, accountSummary)
+	e.tick(t, 2*time.Minute)
+	if len(e.n.sent) != 2 {
+		t.Fatalf("a failing account lookup must not block delivery, sent %d", len(e.n.sent))
 	}
 }

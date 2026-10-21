@@ -29,6 +29,7 @@ type Config struct {
 	Backfill     time.Duration // BACKFILL_HOURS: meetings to send on first run
 	Location     *time.Location
 	DBFile       string
+	SelfName     string // SELF_NAME: replaces the Wispr account name in summaries
 }
 
 // Load reads configuration from the environment, after filling unset
@@ -70,6 +71,7 @@ func Load() (Config, error) {
 		Backfill:     time.Duration(backfill) * time.Hour,
 		Location:     loc,
 		DBFile:       filepath.Join(dir, "state.db"),
+		SelfName:     getenv("SELF_NAME", ""),
 	}, nil
 }
 
