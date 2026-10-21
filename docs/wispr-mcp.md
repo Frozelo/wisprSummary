@@ -105,6 +105,20 @@ Notes:
 - No separate `todos` field was seen in the tool description; per the docs, tasks live in the summary's "Next steps" section (localized heading, e.g. «Следующие шаги»). **VERIFY**.
 - Shared meetings (`shared=true`) belong to someone else; the MVP should skip them (own meetings only).
 
+## Verified live (2026-10-21)
+
+Confirmed with the Go client against the real server (`bot login`, `bot tools`, `bot call`):
+
+- Direct OAuth works: discovery, DCR, PKCE with loopback redirect, refresh token issued. Access token lifetime is about 7 days.
+- Streamable HTTP works with `Authorization: Bearer`; 14 read-only tools are exposed with **unprefixed** names (`search_meetings`, `get_meeting`, ...).
+- Tool results carry a parsed `structuredContent` object (preferred over parsing the text block).
+- `search_meetings` items: `id, title, content_excerpt, finalized, has_transcript, attendees, start, end, modified_at, share_link` (+ `shared`, `owner`, `folders` for others' notes). **`finalized` and `modified_at` exist.**
+- Without `query`, results are ordered by **`modified_at` newest first** (cursor encodes `modified_at|id`), despite `since/until` filtering by meeting start. So a `modified_at` watermark is the right incremental key.
+- Page also returns `count`, `has_more`, `next_cursor`, `more`.
+- `get_meeting` keys: `id, title, content, summary, finalized, has_transcript, attendees, todos, start, end, modified_at, share_link`. `todos` was an empty list for the meetings tried, `content` (user notes) was empty, and `summary` is markdown using `###` headings. `summary` may be absent/empty for very short recordings.
+
+Still open: `todos` shape when non-empty, which heading names Wispr uses for next steps across languages, refresh-token rotation behaviour (the client already persists rotated tokens).
+
 ## Implementation notes
 
 - Never log tokens or request `Authorization` headers.
