@@ -2,7 +2,7 @@
 
 A small Go service that watches your [Wispr Flow](https://wisprflow.ai) Notetaker for newly finished meetings and sends a compact summary (key points, decisions, action items, link) to your personal Telegram chat. No manual steps after a call ends.
 
-> **Status:** Stages 1–4 done — `bot run` polls Wispr and delivers summaries to Telegram. Dockerfile and final polish (Stage 5) are pending; see [docs/roadmap.md](docs/roadmap.md).
+> **Status:** MVP complete — `bot run` polls Wispr and delivers summaries to Telegram; runs locally, in Docker, or (for a free trial) on GitHub Actions. See [docs/roadmap.md](docs/roadmap.md).
 
 ## How it works
 
@@ -21,22 +21,25 @@ Go · Wispr Flow remote MCP (OAuth 2.1 + PKCE, read-only) · Telegram Bot API ·
 
 Wispr's MCP server uses standard MCP OAuth (discovery, dynamic client registration, authorization code + PKCE, refresh tokens via `offline_access`). There is no API key. You authorize once through a browser with `bot login`; the refresh token is stored in the local data directory (`0600`) and renewed automatically. Access is read-only; the service never modifies notes or sharing settings. Details: [docs/wispr-mcp.md](docs/wispr-mcp.md).
 
-## Planned usage
+## Quick start (local)
 
 ```bash
-cp .env.example .env            # set TELEGRAM_BOT_TOKEN
+cp .env.example .env            # set TELEGRAM_BOT_TOKEN (from @BotFather)
 go run ./cmd/bot login          # one-off Wispr OAuth in the browser
-go run ./cmd/bot telegram-setup # send /start to your bot, copy the chat id into .env
+go run ./cmd/bot telegram-setup # send /start to your bot, confirm, copy the chat id into .env
 go run ./cmd/bot telegram-test  # optional: check delivery
 go run ./cmd/bot run            # start polling (Ctrl+C to stop)
 ```
 
-Docker:
+Other commands: `status`, `tools`, `call <tool> [json]`, `preview <meeting-id> [--send]`, `run --once`.
+
+## Docker
 
 ```bash
-docker build -t wispr-telegram .
-docker run --env-file .env -v "$PWD/data:/data" wispr-telegram
+docker compose up -d --build    # builds the image and starts the service
 ```
+
+The image is a static binary on distroless (non-root); state lives in the `wispr-bot-data` volume. Step-by-step server setup, updates and backups: [docs/deploy.md](docs/deploy.md). CI (`gofmt`, `vet`, `test -race`) runs on every pull request, and the `docker` workflow publishes `ghcr.io/frozelo/wisprsummary` from `main`.
 
 ## Try it for free on GitHub Actions
 
@@ -49,7 +52,7 @@ gh workflow run poll.yml -f backfill_hours=24   # first run only: also send the 
 gh run list --workflow poll.yml                  # check the runs
 ```
 
-Notes: do not run the bot locally with the same Wispr session at the same time (a refreshed token may invalidate the other copy); if the cache is evicted (7 days unused) the session is re-seeded from `WISPR_TOKEN_B64`, which may require `bot login` again; GitHub disables schedules after 60 days without repository activity. For permanent use run the service on a VPS instead.
+Notes: do not run the bot locally with the same Wispr session at the same time (a refreshed token may invalidate the other copy); if the cache is evicted (7 days unused) the session is re-seeded from `WISPR_TOKEN_B64`, which may require `bot login` again; GitHub disables schedules after 60 days without repository activity. For permanent use run the service on a VPS instead ([docs/deploy.md](docs/deploy.md)) and disable this workflow (`gh workflow disable poll.yml`).
 
 ## Configuration
 
@@ -75,6 +78,7 @@ Notes: do not run the bot locally with the same Wispr session at the same time (
 
 - [Architecture](docs/architecture.md)
 - [Wispr MCP integration & OAuth findings](docs/wispr-mcp.md)
+- [Deploying on a server](docs/deploy.md)
 - [Telegram integration](docs/telegram.md)
 - [Roadmap, tests, definition of done](docs/roadmap.md)
 

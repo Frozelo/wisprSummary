@@ -1,0 +1,15 @@
+# Run on a server:  docker compose up -d
+# Build locally instead of pulling:  docker compose up -d --build
+services:
+  bot:
+    image: ghcr.io/frozelo/wisprsummary:latest
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - bot-data:/data
+    # No ports: the service only makes outbound calls (Wispr, Telegram).
+
+volumes:
+  bot-data:
+    name: wispr-bot-data
