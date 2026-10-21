@@ -284,3 +284,11 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 		return ctx.Err()
 	}
 }
+
+// Chat sends messages to one fixed chat; it is the only sink the service uses.
+type Chat struct {
+	C  *Client
+	ID int64
+}
+
+func (c Chat) Send(ctx context.Context, html string) error { return c.C.SendMessage(ctx, c.ID, html) }

@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestDotEnvDoesNotOverrideEnvironment(t *testing.T) {
@@ -54,5 +55,36 @@ func TestParseChatID(t *testing.T) {
 		if _, err := parseChatID(bad); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+func TestEnvValidation(t *testing.T) {
+	t.Setenv("POLL_INTERVAL", "")
+	if d, err := durationEnv("POLL_INTERVAL", 2*time.Minute, 30*time.Second); d != 2*time.Minute || err != nil {
+		t.Errorf("default: %v %v", d, err)
+	}
+	for _, bad := range []string{"2", "1s", "abc", "-5m"} {
+		t.Setenv("POLL_INTERVAL", bad)
+		if _, err := durationEnv("POLL_INTERVAL", 2*time.Minute, 30*time.Second); err == nil {
+			t.Errorf("POLL_INTERVAL=%q accepted", bad)
+		}
+	}
+	t.Setenv("BACKFILL_HOURS", "6")
+	if n, err := hoursEnv("BACKFILL_HOURS"); n != 6 || err != nil {
+		t.Errorf("hours: %d %v", n, err)
+	}
+	for _, bad := range []string{"-1", "x", "1.5", "999999"} {
+		t.Setenv("BACKFILL_HOURS", bad)
+		if _, err := hoursEnv("BACKFILL_HOURS"); err == nil {
+			t.Errorf("BACKFILL_HOURS=%q accepted", bad)
+		}
+	}
+	t.Setenv("TIMEZONE", "Europe/Moscow")
+	if loc, err := locationEnv("TIMEZONE"); err != nil || loc.String() != "Europe/Moscow" {
+		t.Errorf("tz: %v %v", loc, err)
+	}
+	t.Setenv("TIMEZONE", "Asia/Novosibirk")
+	if _, err := locationEnv("TIMEZONE"); err == nil {
+		t.Error("typo in TIMEZONE accepted")
 	}
 }

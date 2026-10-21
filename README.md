@@ -2,7 +2,7 @@
 
 A small Go service that watches your [Wispr Flow](https://wisprflow.ai) Notetaker for newly finished meetings and sends a compact summary (key points, decisions, action items, link) to your personal Telegram chat. No manual steps after a call ends.
 
-> **Status:** Stage 1 in progress — Wispr OAuth login and MCP client work against the real server (`bot login`, `bot tools`, `bot call`). Telegram delivery and polling are not built yet; see [docs/roadmap.md](docs/roadmap.md).
+> **Status:** Stages 1–4 done — `bot run` polls Wispr and delivers summaries to Telegram. Dockerfile and final polish (Stage 5) are pending; see [docs/roadmap.md](docs/roadmap.md).
 
 ## How it works
 
@@ -27,7 +27,8 @@ Wispr's MCP server uses standard MCP OAuth (discovery, dynamic client registrati
 cp .env.example .env            # set TELEGRAM_BOT_TOKEN
 go run ./cmd/bot login          # one-off Wispr OAuth in the browser
 go run ./cmd/bot telegram-setup # send /start to your bot, copy the chat id into .env
-go run ./cmd/bot run            # start polling
+go run ./cmd/bot telegram-test  # optional: check delivery
+go run ./cmd/bot run            # start polling (Ctrl+C to stop)
 ```
 
 Docker:
@@ -48,6 +49,7 @@ docker run --env-file .env -v "$PWD/data:/data" wispr-telegram
 | `LOOKBACK` | `48h` | Search window safety margin |
 | `BACKFILL_HOURS` | `0` | Meetings to send on first run |
 | `WISPR_MCP_URL` | `https://api.wisprflow.ai/connect/mcp` | MCP endpoint |
+| `TIMEZONE` | system local | IANA zone for the date in messages |
 | `LOG_LEVEL` | `info` | |
 
 ## Security

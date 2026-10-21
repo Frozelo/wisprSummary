@@ -13,9 +13,12 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	_ "time/tzdata" // IANA zones in minimal Docker images
 
 	"github.com/Frozelo/wisprSummary/internal/config"
 	"github.com/Frozelo/wisprSummary/internal/formatter"
+	"github.com/Frozelo/wisprSummary/internal/meeting"
+	"github.com/Frozelo/wisprSummary/internal/storage"
 	"github.com/Frozelo/wisprSummary/internal/telegram"
 	"github.com/Frozelo/wisprSummary/internal/wispr"
 )
@@ -23,6 +26,7 @@ import (
 const usage = `usage: bot <command>
 
 commands:
+  run      poll Wispr and send new meeting summaries to Telegram
   login    authorize Wispr Flow access in the browser (one-off)
   status   show whether a Wispr session is stored
   tools    list Wispr MCP tools with their input schemas
@@ -48,6 +52,8 @@ func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel})))
 
 	switch os.Args[1] {
+	case "run":
+		err = run(ctx, cfg)
 	case "login":
 		err = wispr.Login(ctx, wispr.LoginOptions{
 			MCPURL: cfg.WisprMCPURL,
@@ -213,4 +219,34 @@ func preview(ctx context.Context, cfg config.Config, args []string) error {
 		fmt.Println("sent")
 	}
 	return nil
+}
+
+func run(ctx context.Context, cfg config.Config) error {
+	tg, err := newTelegram(cfg)
+	if err != nil {
+		return err
+	}
+	if cfg.TelegramChatID == 0 {
+		return errors.New("TELEGRAM_CHAT_ID is not set (run telegram-setup)")
+	}
+	if _, err := (wispr.TokenStore{Path: cfg.TokenFile}).Load(); err != nil {
+		return err
+	}
+	db, err := storage.Open(cfg.DBFile)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer db.Close()
+
+	svc := meeting.NewService(meeting.Config{
+		Interval: cfg.PollInterval,
+		Lookback: cfg.Lookback,
+		Backfill: cfg.Backfill,
+		Loc:      cfg.Location,
+	}, newClient(cfg), telegram.Chat{C: tg, ID: cfg.TelegramChatID}, db, slog.Default())
+
+	slog.Info("started", "poll_interval", cfg.PollInterval)
+	err = svc.Run(ctx)
+	slog.Info("stopped")
+	return err
 }
