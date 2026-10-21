@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/Frozelo/wisprSummary/internal/config"
+	"github.com/Frozelo/wisprSummary/internal/formatter"
 	"github.com/Frozelo/wisprSummary/internal/telegram"
 	"github.com/Frozelo/wisprSummary/internal/wispr"
 )
@@ -27,6 +28,7 @@ commands:
   call     call a Wispr MCP tool: bot call <tool> [json-args]
   telegram-setup  wait for /start in a private chat and print its chat id
   telegram-test   send a test message to TELEGRAM_CHAT_ID
+  preview  format a real meeting: bot preview <meeting-id> [--send]
 `
 
 func main() {
@@ -60,6 +62,8 @@ func main() {
 		err = call(ctx, cfg, os.Args[2:])
 	case "telegram-setup":
 		err = telegramSetup(ctx, cfg)
+	case "preview":
+		err = preview(ctx, cfg, os.Args[2:])
 	case "telegram-test":
 		err = telegramTest(ctx, cfg)
 	default:
@@ -169,5 +173,35 @@ func telegramTest(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 	fmt.Println("sent")
+	return nil
+}
+
+// preview prints how a real meeting would look in Telegram; --send delivers it.
+func preview(ctx context.Context, cfg config.Config, args []string) error {
+	if len(args) < 1 {
+		return errors.New("usage: bot preview <meeting-id> [--send]")
+	}
+	m, err := newClient(cfg).GetMeeting(ctx, args[0])
+	if err != nil {
+		return err
+	}
+	msgs := formatter.Format(formatter.Meeting{
+		Title: m.Title, Start: m.Start, ShareLink: m.ShareLink, Summary: m.Summary,
+	}, time.Local)
+	for i, msg := range msgs {
+		fmt.Printf("--- message %d/%d ---\n%s\n", i+1, len(msgs), msg)
+	}
+	if len(args) > 1 && args[1] == "--send" {
+		tg, err := newTelegram(cfg)
+		if err != nil {
+			return err
+		}
+		for _, msg := range msgs {
+			if err := tg.SendMessage(ctx, cfg.TelegramChatID, msg); err != nil {
+				return err
+			}
+		}
+		fmt.Println("sent")
+	}
 	return nil
 }
