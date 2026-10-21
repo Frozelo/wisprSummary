@@ -11,8 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"strconv"
+	"strings"
 	"time"
 	"unicode/utf8"
 )
@@ -61,6 +64,11 @@ type Update struct {
 	UpdateID int64 `json:"update_id"`
 	Message  *struct {
 		Text string `json:"text"`
+		From struct {
+			FirstName string `json:"first_name"`
+			LastName  string `json:"last_name"`
+			Username  string `json:"username"`
+		} `json:"from"`
 		Chat struct {
 			ID   int64  `json:"id"`
 			Type string `json:"type"`
@@ -80,9 +88,10 @@ func (c *Client) SendMessage(ctx context.Context, chatID int64, html string) err
 		"parse_mode":           "HTML",
 		"link_preview_options": map[string]any{"is_disabled": true},
 	}
-	return c.withRetry(ctx, func() (time.Duration, error) {
-		_, wait, err := c.call(ctx, "sendMessage", body)
-		return wait, err
+	// sendMessage is not idempotent: only retry when the request provably never reached Telegram.
+	return c.withRetry(ctx, func() error {
+		_, err := c.call(ctx, "sendMessage", body, false)
+		return err
 	})
 }
 
@@ -94,10 +103,10 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout int) ([]U
 		"allowed_updates": []string{"message"},
 	}
 	var raw json.RawMessage
-	err := c.withRetry(ctx, func() (time.Duration, error) {
-		r, wait, err := c.call(ctx, "getUpdates", body)
+	err := c.withRetry(ctx, func() error {
+		r, err := c.call(ctx, "getUpdates", body, true)
 		raw = r
-		return wait, err
+		return err
 	})
 	if err != nil {
 		return nil, err
@@ -109,78 +118,160 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout int) ([]U
 	return ups, nil
 }
 
-// retryable marks errors worth another attempt.
-type retryable struct{ err error }
+// retryable marks errors worth another attempt. after is a server-requested
+// wait (429); zero means use the default backoff.
+type retryable struct {
+	err   error
+	after time.Duration
+}
 
 func (r *retryable) Error() string { return r.err.Error() }
 func (r *retryable) Unwrap() error { return r.err }
 
-func (c *Client) withRetry(ctx context.Context, fn func() (time.Duration, error)) error {
-	var err error
-	for attempt := 1; attempt <= maxAttempts; attempt++ {
-		var wait time.Duration
-		wait, err = fn()
+func (c *Client) withRetry(ctx context.Context, fn func() error) error {
+	for attempt := 1; ; attempt++ {
+		err := fn()
 		if err == nil {
 			return nil
 		}
-		if _, ok := errors.AsType[*retryable](err); !ok || attempt == maxAttempts {
-			break
+		r, ok := errors.AsType[*retryable](err)
+		if !ok {
+			return err
 		}
+		// Retrying before Telegram's retry_after only extends the flood ban:
+		// give up and let the caller back off instead.
+		if attempt == maxAttempts || r.after > maxRetryCap {
+			return r.err
+		}
+		wait := r.after
 		if wait == 0 {
 			wait = time.Duration(attempt) * 2 * time.Second
 		}
-		if err := c.sleep(ctx, min(wait, maxRetryCap)); err != nil {
+		if err := c.sleep(ctx, wait); err != nil {
 			return err
 		}
 	}
-	if r, ok := errors.AsType[*retryable](err); ok {
-		return r.err
-	}
-	return err
 }
 
-// call performs one API request. The returned duration is a server-requested wait.
-func (c *Client) call(ctx context.Context, method string, body any) (json.RawMessage, time.Duration, error) {
+// call performs one API request. idempotent says whether repeating the request
+// after an ambiguous transport failure (timeout, reset) is harmless.
+func (c *Client) call(ctx context.Context, method string, body any, idempotent bool) (json.RawMessage, error) {
 	b, err := json.Marshal(body)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/bot"+c.token+"/"+method, bytes.NewReader(b))
 	if err != nil {
-		return nil, 0, errors.New("telegram: build request")
+		return nil, errors.New("telegram: build request")
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {
-			return nil, 0, ctx.Err()
+			return nil, ctx.Err()
 		}
+		neverSent := isDialError(err)
 		if ue, ok := errors.AsType[*url.Error](err); ok {
 			err = ue.Err // drop the URL: it contains the token
 		}
-		return nil, 0, &retryable{fmt.Errorf("telegram: %s: %w", method, err)}
+		err = fmt.Errorf("telegram: %s: %w", method, err)
+		if idempotent || neverSent {
+			return nil, &retryable{err: err}
+		}
+		return nil, fmt.Errorf("%w (delivery state unknown, not retried)", err)
 	}
 	defer resp.Body.Close()
 
 	var r apiResponse
 	data, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err := json.Unmarshal(data, &r); err != nil {
-		if resp.StatusCode >= 500 {
-			return nil, 0, &retryable{fmt.Errorf("telegram: %s: http %d", method, resp.StatusCode)}
+		herr := fmt.Errorf("telegram: %s: http %d, bad response", method, resp.StatusCode)
+		switch {
+		case resp.StatusCode == http.StatusTooManyRequests:
+			secs, _ := strconv.Atoi(resp.Header.Get("Retry-After"))
+			return nil, &retryable{err: herr, after: time.Duration(secs) * time.Second}
+		case resp.StatusCode >= 500:
+			return nil, &retryable{err: herr}
 		}
-		return nil, 0, fmt.Errorf("telegram: %s: http %d, bad response", method, resp.StatusCode)
+		return nil, herr
 	}
 	if r.OK {
-		return r.Result, 0, nil
+		return r.Result, nil
 	}
 	apiErr := &APIError{Code: r.ErrorCode, Description: r.Description}
 	switch {
 	case r.ErrorCode == http.StatusTooManyRequests:
-		return nil, time.Duration(r.Parameters.RetryAfter) * time.Second, &retryable{apiErr}
+		return nil, &retryable{err: apiErr, after: time.Duration(r.Parameters.RetryAfter) * time.Second}
 	case r.ErrorCode >= 500:
-		return nil, 0, &retryable{apiErr}
+		return nil, &retryable{err: apiErr}
 	}
-	return nil, 0, apiErr
+	return nil, apiErr
+}
+
+// isDialError reports a failure before any request bytes could reach the server.
+func isDialError(err error) bool {
+	oe, ok := errors.AsType[*net.OpError](err)
+	return ok && oe.Op == "dial"
+}
+
+// Sender identifies who sent a /start message.
+type Sender struct {
+	ChatID int64
+	Name   string
+}
+
+// WaitForStart waits for a /start sent to the bot in a private chat after this
+// call began (older pending updates are discarded) and returns that chat id.
+// confirm must approve each sender; the bot is public, so a stranger could
+// otherwise get registered. Only confirmed chats receive a reply.
+func (c *Client) WaitForStart(ctx context.Context, confirm func(Sender) bool) (int64, error) {
+	var offset int64
+	old, err := c.GetUpdates(ctx, -1, 0) // -1 = only the most recent pending update
+	if err != nil {
+		return 0, err
+	}
+	for _, u := range old {
+		offset = max(offset, u.UpdateID+1)
+	}
+	for {
+		ups, err := c.GetUpdates(ctx, offset, 30)
+		if err != nil {
+			return 0, err
+		}
+		for _, u := range ups {
+			offset = u.UpdateID + 1
+			m := u.Message
+			if m == nil || m.Chat.Type != "private" || !isStart(m.Text) {
+				continue
+			}
+			s := Sender{ChatID: m.Chat.ID, Name: displayName(m.From.FirstName, m.From.LastName, m.From.Username)}
+			if !confirm(s) {
+				continue
+			}
+			_ = c.SendMessage(ctx, s.ChatID, "Chat registered. Set TELEGRAM_CHAT_ID in the service config to receive meeting summaries here.")
+			return s.ChatID, nil
+		}
+	}
+}
+
+func isStart(text string) bool {
+	f := strings.Fields(text)
+	if len(f) == 0 {
+		return false
+	}
+	cmd, _, _ := strings.Cut(f[0], "@") // /start@BotName
+	return cmd == "/start"
+}
+
+func displayName(first, last, username string) string {
+	name := strings.TrimSpace(first + " " + last)
+	if username != "" {
+		name += " (@" + username + ")"
+	}
+	if name == "" {
+		return "unknown"
+	}
+	return strings.TrimSpace(name)
 }
 
 func sleepCtx(ctx context.Context, d time.Duration) error {

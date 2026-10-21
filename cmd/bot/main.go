@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -43,10 +44,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(2)
+	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel})))
 
-	var err error
 	switch os.Args[1] {
 	case "run":
 		err = run(ctx, cfg)
@@ -141,30 +145,25 @@ func newTelegram(cfg config.Config) (*telegram.Client, error) {
 	return telegram.New(cfg.TelegramBotToken, &http.Client{Timeout: 45 * time.Second}), nil
 }
 
-// telegramSetup waits for /start in a private chat and prints the chat id.
+// telegramSetup waits for /start in a private chat, asks the operator to
+// confirm the sender, and prints the chat id.
 func telegramSetup(ctx context.Context, cfg config.Config) error {
 	tg, err := newTelegram(cfg)
 	if err != nil {
 		return err
 	}
 	fmt.Println("Send /start to your bot from your personal Telegram account (Ctrl+C to cancel)...")
-	var offset int64
-	for {
-		ups, err := tg.GetUpdates(ctx, offset, 30)
-		if err != nil {
-			return err
-		}
-		for _, u := range ups {
-			offset = u.UpdateID + 1
-			m := u.Message
-			if m == nil || m.Chat.Type != "private" || !strings.HasPrefix(m.Text, "/start") {
-				continue
-			}
-			fmt.Printf("\nChat id: %d\nAdd to .env:  TELEGRAM_CHAT_ID=%d\n", m.Chat.ID, m.Chat.ID)
-			_ = tg.SendMessage(ctx, m.Chat.ID, "Chat registered. Set TELEGRAM_CHAT_ID in the service config to receive meeting summaries here.")
-			return nil
-		}
+	in := bufio.NewReader(os.Stdin)
+	id, err := tg.WaitForStart(ctx, func(s telegram.Sender) bool {
+		fmt.Printf("\nGot /start from %s (chat id %d). Is this you? [y/N]: ", s.Name, s.ChatID)
+		line, _ := in.ReadString('\n')
+		return strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "y")
+	})
+	if err != nil {
+		return err
 	}
+	fmt.Printf("\nAdd to .env:  TELEGRAM_CHAT_ID=%d\n", id)
+	return nil
 }
 
 func telegramTest(ctx context.Context, cfg config.Config) error {
