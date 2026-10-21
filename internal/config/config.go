@@ -4,6 +4,7 @@ package config
 import (
 	"bufio"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -38,6 +39,22 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	pollInterval, err := durationEnv("POLL_INTERVAL", 2*time.Minute, 30*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+	lookback, err := durationEnv("LOOKBACK", 48*time.Hour, time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+	backfill, err := hoursEnv("BACKFILL_HOURS")
+	if err != nil {
+		return Config{}, err
+	}
+	loc, err := locationEnv("TIMEZONE")
+	if err != nil {
+		return Config{}, err
+	}
 	dir := getenv("DATA_DIR", "./data")
 	return Config{
 		DataDir:     dir,
@@ -48,38 +65,52 @@ func Load() (Config, error) {
 		TelegramBotToken: getenv("TELEGRAM_BOT_TOKEN", ""),
 		TelegramChatID:   chatID,
 
-		PollInterval: parseDuration(getenv("POLL_INTERVAL", ""), 2*time.Minute),
-		Lookback:     parseDuration(getenv("LOOKBACK", ""), 48*time.Hour),
-		Backfill:     time.Duration(parseHours(getenv("BACKFILL_HOURS", ""))) * time.Hour,
-		Location:     parseLocation(getenv("TIMEZONE", "")),
+		PollInterval: pollInterval,
+		Lookback:     lookback,
+		Backfill:     time.Duration(backfill) * time.Hour,
+		Location:     loc,
 		DBFile:       filepath.Join(dir, "state.db"),
 	}, nil
 }
 
-func parseDuration(s string, def time.Duration) time.Duration {
-	if d, err := time.ParseDuration(s); err == nil && d > 0 {
-		return d
+// durationEnv reads a Go duration such as "2m"; unset means def, malformed or
+// below min is an error (a typo must not silently change behaviour).
+func durationEnv(key string, def, min time.Duration) (time.Duration, error) {
+	v := getenv(key, "")
+	if v == "" {
+		return def, nil
 	}
-	return def
+	d, err := time.ParseDuration(v)
+	if err != nil || d < min {
+		return 0, fmt.Errorf("%s must be a duration of at least %s (e.g. %s), got %q", key, min, def, v)
+	}
+	return d, nil
 }
 
-// parseLocation resolves an IANA name; empty or invalid falls back to local time.
-func parseLocation(name string) *time.Location {
-	if name != "" {
-		if loc, err := time.LoadLocation(name); err == nil {
-			return loc
-		}
+// hoursEnv reads a non-negative whole number of hours; unset means 0.
+func hoursEnv(key string) (int64, error) {
+	v := getenv(key, "")
+	if v == "" {
+		return 0, nil
 	}
-	return time.Local
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil || n < 0 || n > 24*365 {
+		return 0, fmt.Errorf("%s must be a whole number of hours between 0 and %d, got %q", key, 24*365, v)
+	}
+	return n, nil
 }
 
-// parseHours reads BACKFILL_HOURS; empty, invalid or negative means 0.
-func parseHours(s string) int64 {
-	n, err := strconv.ParseInt(s, 10, 64)
-	if err != nil || n < 0 {
-		return 0
+// locationEnv resolves an IANA zone; unset means the system local zone.
+func locationEnv(key string) (*time.Location, error) {
+	v := getenv(key, "")
+	if v == "" {
+		return time.Local, nil
 	}
-	return n
+	loc, err := time.LoadLocation(v)
+	if err != nil {
+		return nil, fmt.Errorf("%s: unknown time zone %q (use an IANA name like Europe/Moscow)", key, v)
+	}
+	return loc, nil
 }
 
 // parseChatID returns 0 for an unset value and an error for a malformed one.

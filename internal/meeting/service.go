@@ -16,11 +16,16 @@ import (
 	"github.com/Frozelo/wisprSummary/internal/wispr"
 )
 
-const maxPages = 20 // Wispr caps paging at 1000 results per query
+const (
+	maxPages   = 20 // Wispr caps paging at 1000 results per query
+	claimTTL   = 10 * time.Minute
+	maxBackoff = 30 * time.Minute
+	dbTimeout  = 5 * time.Second
+)
 
 // Source is the Wispr side (implemented by *wispr.Client).
 type Source interface {
-	SearchMeetings(ctx context.Context, since time.Time, cursor string, limit int) (wispr.MeetingPage, error)
+	SearchMeetings(ctx context.Context, cursor string, limit int) (wispr.MeetingPage, error)
 	GetMeeting(ctx context.Context, id string) (wispr.Meeting, error)
 }
 
@@ -32,6 +37,8 @@ type Notifier interface {
 type Store interface {
 	IsProcessed(ctx context.Context, id string) (bool, error)
 	MarkProcessed(ctx context.Context, id, title string, at time.Time) error
+	Claim(ctx context.Context, id string, now time.Time, ttl time.Duration) (bool, error)
+	Release(ctx context.Context, id string) error
 	Watermark(ctx context.Context) (time.Time, bool, error)
 	SetWatermark(ctx context.Context, t time.Time) error
 }
@@ -77,11 +84,12 @@ type Service struct {
 	log      *slog.Logger
 	now      func() time.Time
 	failures map[string]*failure
+	sent     map[string]int // meeting id -> message parts already delivered
 }
 
 func NewService(cfg Config, src Source, n Notifier, st Store, log *slog.Logger) *Service {
 	cfg.setDefaults()
-	return &Service{cfg: cfg, src: src, notify: n, store: st, log: log, now: time.Now, failures: map[string]*failure{}}
+	return &Service{cfg: cfg, src: src, notify: n, store: st, log: log, now: time.Now, failures: map[string]*failure{}, sent: map[string]int{}}
 }
 
 // Run polls until ctx is cancelled. Errors never stop the loop; a lost Wispr
@@ -141,7 +149,9 @@ func (s *Service) Tick(ctx context.Context) error {
 			oldestPending = m.ModifiedAt
 		}
 	}
+	seen := make(map[string]bool, len(found))
 	for _, m := range found {
+		seen[m.ID] = true
 		if m.Shared {
 			continue // someone else's notes
 		}
@@ -152,6 +162,14 @@ func (s *Service) Tick(ctx context.Context) error {
 		if done {
 			continue
 		}
+		if s.tooOld(m, start) {
+			// An old meeting that was merely edited (renamed, moved) bumps modified_at;
+			// it is not news. Record it so it is never reconsidered.
+			if err := s.markProcessed(ctx, m); err != nil {
+				return err
+			}
+			continue
+		}
 		if !m.Finalized {
 			hold(m)
 			continue
@@ -160,14 +178,35 @@ func (s *Service) Tick(ctx context.Context) error {
 			hold(m)
 			continue
 		}
+		claimed, err := s.store.Claim(ctx, m.ID, s.now(), claimTTL)
+		if err != nil {
+			return fmt.Errorf("claim: %w", err)
+		}
+		if !claimed {
+			continue // another instance is delivering it
+		}
 		switch err := s.process(ctx, m); {
 		case err == nil:
 			delete(s.failures, m.ID)
+			delete(s.sent, m.ID)
 		case ctx.Err() != nil:
+			s.release(m.ID)
 			return ctx.Err()
 		default:
+			s.release(m.ID)
 			s.recordFailure(m, err)
 			hold(m)
+		}
+	}
+	// Forget state for meetings that left the scan window.
+	for id := range s.failures {
+		if !seen[id] {
+			delete(s.failures, id)
+		}
+	}
+	for id := range s.sent {
+		if !seen[id] {
+			delete(s.sent, id)
 		}
 	}
 
@@ -190,9 +229,12 @@ func (s *Service) collect(ctx context.Context, wm time.Time) ([]wispr.MeetingInf
 	var out []wispr.MeetingInfo
 	cursor := ""
 	for range maxPages {
-		page, err := s.src.SearchMeetings(ctx, time.Time{}, cursor, s.cfg.PageSize)
+		page, err := s.src.SearchMeetings(ctx, cursor, s.cfg.PageSize)
 		if err != nil {
 			return nil, err
+		}
+		if page.Skipped > 0 {
+			s.log.Warn("skipped undecodable meetings in search results", "count", page.Skipped)
 		}
 		reached := false
 		for _, m := range page.Meetings {
@@ -219,24 +261,58 @@ func (s *Service) process(ctx context.Context, info wispr.MeetingInfo) error {
 		return fmt.Errorf("get meeting: %w", err)
 	}
 	if strings.TrimSpace(m.Summary) == "" {
-		if s.now().Sub(m.End) < s.cfg.SummaryGrace {
+		// Wait for the summary relative to when the meeting became final
+		// (modified_at), not when it ended: processing can lag the end by far more than the grace.
+		ready := m.ModifiedAt
+		if m.End.After(ready) {
+			ready = m.End
+		}
+		if s.now().Sub(ready) < s.cfg.SummaryGrace {
 			return errSummaryPending
 		}
 		s.log.Info("skipping meeting without summary", "id", info.ID)
-		return s.store.MarkProcessed(ctx, info.ID, info.Title, s.now())
+		return s.markProcessed(ctx, info)
 	}
-	for _, msg := range formatter.Format(formatter.Meeting{
+	msgs := formatter.Format(formatter.Meeting{
 		Title: m.Title, Start: m.Start, ShareLink: m.ShareLink, Summary: m.Summary,
-	}, s.cfg.Loc) {
-		if err := s.notify.Send(ctx, msg); err != nil {
-			return fmt.Errorf("send: %w", err)
+	}, s.cfg.Loc)
+	// Resume after the parts already delivered so a retry never repeats them.
+	for i := s.sent[info.ID]; i < len(msgs); i++ {
+		if err := s.notify.Send(ctx, msgs[i]); err != nil {
+			return fmt.Errorf("send part %d/%d: %w", i+1, len(msgs), err)
 		}
+		s.sent[info.ID] = i + 1
 	}
-	if err := s.store.MarkProcessed(ctx, info.ID, info.Title, s.now()); err != nil {
+	if err := s.markProcessed(ctx, info); err != nil {
 		return fmt.Errorf("mark processed (message was sent): %w", err)
 	}
 	s.log.Info("meeting sent", "id", info.ID)
 	return nil
+}
+
+// markProcessed records a meeting even when ctx was just cancelled (shutdown
+// right after a send), otherwise the next start would deliver it again.
+func (s *Service) markProcessed(ctx context.Context, m wispr.MeetingInfo) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dbTimeout)
+	defer cancel()
+	return s.store.MarkProcessed(ctx, m.ID, m.Title, s.now())
+}
+
+func (s *Service) release(id string) {
+	ctx, cancel := context.WithTimeout(context.Background(), dbTimeout)
+	defer cancel()
+	if err := s.store.Release(ctx, id); err != nil {
+		s.log.Error("release claim", "id", id, "err", err)
+	}
+}
+
+// tooOld reports meetings that ended longer ago than the retry/backfill window.
+func (s *Service) tooOld(m wispr.MeetingInfo, now time.Time) bool {
+	ref := m.End
+	if ref.IsZero() {
+		ref = m.Start
+	}
+	return !ref.IsZero() && now.Sub(ref) > max(s.cfg.Lookback, s.cfg.Backfill)
 }
 
 func (s *Service) recordFailure(m wispr.MeetingInfo, err error) {
@@ -250,7 +326,11 @@ func (s *Service) recordFailure(m wispr.MeetingInfo, err error) {
 		s.failures[m.ID] = f
 	}
 	f.n++
-	backoff := min(30*time.Minute, s.cfg.Interval<<(f.n-1))
+	backoff := s.cfg.Interval
+	for i := 1; i < f.n && backoff < maxBackoff; i++ { // doubling, capped; no shift overflow
+		backoff *= 2
+	}
+	backoff = min(backoff, maxBackoff)
 	f.next = s.now().Add(backoff)
 	s.log.Error("meeting failed; will retry", "id", m.ID, "attempt", f.n, "retry_in", backoff, "err", err)
 }

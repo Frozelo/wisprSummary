@@ -18,6 +18,10 @@ CREATE TABLE IF NOT EXISTS processed_meetings (
 	title        TEXT NOT NULL,
 	processed_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS claims (
+	id         TEXT PRIMARY KEY,
+	claimed_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS kv (
 	key   TEXT PRIMARY KEY,
 	value TEXT NOT NULL
@@ -55,9 +59,31 @@ func (s *SQLite) IsProcessed(ctx context.Context, id string) (bool, error) {
 }
 
 func (s *SQLite) MarkProcessed(ctx context.Context, id, title string, at time.Time) error {
-	_, err := s.db.ExecContext(ctx,
+	if _, err := s.db.ExecContext(ctx,
 		`INSERT OR IGNORE INTO processed_meetings (id, title, processed_at) VALUES (?, ?, ?)`,
-		id, title, at.UTC().Format(time.RFC3339Nano))
+		id, title, at.UTC().Format(time.RFC3339Nano)); err != nil {
+		return err
+	}
+	return s.Release(ctx, id)
+}
+
+// Claim atomically reserves a meeting for sending so two processes sharing the
+// database cannot both deliver it. A claim older than ttl is considered
+// abandoned (crashed process) and can be taken over.
+func (s *SQLite) Claim(ctx context.Context, id string, now time.Time, ttl time.Duration) (bool, error) {
+	res, err := s.db.ExecContext(ctx,
+		`INSERT INTO claims (id, claimed_at) VALUES (?, ?)
+		 ON CONFLICT(id) DO UPDATE SET claimed_at = excluded.claimed_at WHERE claims.claimed_at <= ?`,
+		id, now.UnixNano(), now.Add(-ttl).UnixNano())
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
+func (s *SQLite) Release(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM claims WHERE id = ?`, id)
 	return err
 }
 
