@@ -14,7 +14,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Frozelo/wisprSummary/internal/formatter"
 	"github.com/Frozelo/wisprSummary/internal/storage"
+	"github.com/Frozelo/wisprSummary/internal/telegram"
 	"github.com/Frozelo/wisprSummary/internal/wispr"
 )
 
@@ -79,17 +81,31 @@ func (f *fakeSource) GetMeeting(_ context.Context, id string) (wispr.Meeting, er
 }
 
 type fakeNotifier struct {
-	sent []string
-	fail func(msg string) error
+	sent  []string
+	kbs   []telegram.Keyboard
+	edits []edit
+	fail  func(msg string) error
 }
 
-func (n *fakeNotifier) Send(_ context.Context, msg string) error {
+type edit struct {
+	id   int64
+	text string
+	kb   telegram.Keyboard
+}
+
+func (n *fakeNotifier) Send(_ context.Context, msg string, kb telegram.Keyboard) (int64, error) {
 	if n.fail != nil {
 		if err := n.fail(msg); err != nil {
-			return err
+			return 0, err
 		}
 	}
 	n.sent = append(n.sent, msg)
+	n.kbs = append(n.kbs, kb)
+	return int64(100 + len(n.sent)), nil
+}
+
+func (n *fakeNotifier) Edit(_ context.Context, id int64, text string, kb telegram.Keyboard) error {
+	n.edits = append(n.edits, edit{id, text, kb})
 	return nil
 }
 
@@ -329,12 +345,14 @@ type countingNotifier struct {
 	msgs []string
 }
 
-func (n *countingNotifier) Send(_ context.Context, m string) error {
+func (n *countingNotifier) Send(_ context.Context, m string, _ telegram.Keyboard) (int64, error) {
 	n.mu.Lock()
 	n.msgs = append(n.msgs, m)
 	n.mu.Unlock()
-	return nil
+	return 1, nil
 }
+
+func (n *countingNotifier) Edit(context.Context, int64, string, telegram.Keyboard) error { return nil }
 
 func (n *countingNotifier) count() int {
 	n.mu.Lock()
@@ -380,7 +398,7 @@ func TestShutdownAfterSendStillRecordsMeeting(t *testing.T) {
 	e.n.fail = func(string) error { return nil }
 	n := e.n
 	e.svc.notify = notifierFunc(func(c context.Context, msg string) error {
-		err := n.Send(c, msg)
+		_, err := n.Send(c, msg, nil)
 		cancel() // SIGTERM arrives right after the message went out
 		return err
 	})
@@ -396,7 +414,11 @@ func TestShutdownAfterSendStillRecordsMeeting(t *testing.T) {
 
 type notifierFunc func(context.Context, string) error
 
-func (f notifierFunc) Send(ctx context.Context, m string) error { return f(ctx, m) }
+func (f notifierFunc) Send(ctx context.Context, m string, _ telegram.Keyboard) (int64, error) {
+	return 1, f(ctx, m)
+}
+
+func (f notifierFunc) Edit(context.Context, int64, string, telegram.Keyboard) error { return nil }
 func TestSendFailureRetriesAndDoesNotBlockOthers(t *testing.T) {
 	e := newEnv(t)
 	e.tick(t, 0)
@@ -594,5 +616,224 @@ func TestSelfNameUnsetKeepsTextAndAccountErrorDoesNotBlock(t *testing.T) {
 	e.tick(t, 2*time.Minute)
 	if len(e.n.sent) != 2 {
 		t.Fatalf("a failing account lookup must not block delivery, sent %d", len(e.n.sent))
+	}
+}
+
+// ---- task checkboxes ----
+
+const tasksSummary = "### Следующие шаги\n- (Иван) Первая\n- (Иван) Вторая\n- (Дима) Третья\n"
+
+const chatID = int64(42)
+
+type fakeCallbacks struct {
+	pending []telegram.Update // all updates ever received
+	answers []string
+}
+
+func (f *fakeCallbacks) Updates(_ context.Context, offset int64, _ int) ([]telegram.Update, error) {
+	var out []telegram.Update
+	for _, u := range f.pending {
+		if u.UpdateID >= offset {
+			out = append(out, u)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeCallbacks) Answer(_ context.Context, _ string, text string) error {
+	f.answers = append(f.answers, text)
+	return nil
+}
+
+func press(updateID int64, chat, msgID int64, data string) telegram.Update {
+	cq := &telegram.CallbackQuery{ID: fmt.Sprint("cq", updateID), Data: data}
+	cq.Message = &struct {
+		MessageID int64 `json:"message_id"`
+		Chat      struct {
+			ID int64 `json:"id"`
+		} `json:"chat"`
+	}{MessageID: msgID}
+	cq.Message.Chat.ID = chat
+	return telegram.Update{UpdateID: updateID, CallbackQuery: cq}
+}
+
+// delivered sends one meeting with tasks and returns its digest id.
+func delivered(t *testing.T, e *env, cb *fakeCallbacks) int64 {
+	t.Helper()
+	e.svc.cfg.ChatID = chatID
+	e.svc.EnableCallbacks(cb)
+	e.tick(t, 0)
+	e.src.add("m1", t0.Add(time.Minute), true, tasksSummary)
+	e.tick(t, 2*time.Minute)
+	if len(e.n.sent) != 1 {
+		t.Fatalf("sent %d", len(e.n.sent))
+	}
+	id, err := e.st.SaveDigest(context.Background(), storage.Digest{MeetingID: "m1"}, e.clock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func TestDeliveredMessageHasCheckboxButtons(t *testing.T) {
+	e := newEnv(t)
+	cb := &fakeCallbacks{}
+	id := delivered(t, e, cb)
+	kb := e.n.kbs[0]
+	if len(kb) != 3 || len(kb[0]) != 1 {
+		t.Fatalf("want one full-width button per task, got %+v", kb)
+	}
+	if kb[0][0].Text != "☐ Иван · Первая" || kb[0][0].Data != fmt.Sprintf("t:%d:1", id) {
+		t.Fatalf("button = %+v", kb[0][0])
+	}
+	if kb[2][0].Text != "☐ Дима · Третья" {
+		t.Fatalf("button = %+v", kb[2][0])
+	}
+	if !strings.Contains(e.n.sent[0], "☐ 1. Первая") {
+		t.Fatalf("text = %s", e.n.sent[0])
+	}
+}
+
+func TestPressTogglesTaskAndRedrawsMessage(t *testing.T) {
+	e := newEnv(t)
+	cb := &fakeCallbacks{}
+	id := delivered(t, e, cb)
+	data := fmt.Sprintf("t:%d:2", id)
+
+	cb.pending = append(cb.pending, press(1, chatID, 101, data))
+	if err := e.svc.HandleUpdates(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+	if len(e.n.edits) != 1 {
+		t.Fatalf("edits = %d", len(e.n.edits))
+	}
+	ed := e.n.edits[0]
+	if ed.id != 101 || !strings.Contains(ed.text, "☑ 2. <s>Вторая</s>") || !strings.Contains(ed.text, "☐ 1. Первая") {
+		t.Fatalf("edit = %+v", ed)
+	}
+	if ed.kb[1][0].Text != "☑ Иван · Вторая" || ed.kb[0][0].Text != "☐ Иван · Первая" {
+		t.Fatalf("keyboard = %+v", ed.kb)
+	}
+	if cb.answers[0] != "✓ Выполнено" {
+		t.Fatalf("answers = %q", cb.answers)
+	}
+
+	// A second press on the same task un-ticks it; the stored offset prevents replays.
+	cb.pending = append(cb.pending, press(2, chatID, 101, data))
+	if err := e.svc.HandleUpdates(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.svc.HandleUpdates(context.Background(), 0); err != nil { // nothing new
+		t.Fatal(err)
+	}
+	if len(e.n.edits) != 2 || !strings.Contains(e.n.edits[1].text, "☐ 2. Вторая") || strings.Contains(e.n.edits[1].text, "<s>") {
+		t.Fatalf("edits = %+v", e.n.edits)
+	}
+	if cb.answers[1] != "↩ Снова в работе" {
+		t.Fatalf("answers = %q", cb.answers)
+	}
+}
+
+func TestPressesSurviveRestartWithoutReplay(t *testing.T) {
+	e := newEnv(t)
+	cb := &fakeCallbacks{}
+	id := delivered(t, e, cb)
+	cb.pending = append(cb.pending, press(1, chatID, 101, fmt.Sprintf("t:%d:1", id)))
+	e.svc.HandleUpdates(context.Background(), 0)
+
+	e.open(t) // restart: new process, same database
+	e.svc.cfg.ChatID = chatID
+	e.svc.EnableCallbacks(cb)
+	e.svc.HandleUpdates(context.Background(), 0)
+	done, _ := e.st.DoneTasks(context.Background(), id)
+	if !done[1] || len(e.n.edits) != 1 {
+		t.Fatalf("a press was replayed after restart: done=%v edits=%d", done, len(e.n.edits))
+	}
+}
+
+func TestPressFromForeignChatOrBadDataIsIgnored(t *testing.T) {
+	e := newEnv(t)
+	cb := &fakeCallbacks{}
+	id := delivered(t, e, cb)
+	good := fmt.Sprintf("t:%d:1", id)
+	cb.pending = []telegram.Update{
+		press(1, 999, 101, good),                                                   // someone else's chat
+		press(2, chatID, 101, "garbage"),                                           // malformed
+		press(3, chatID, 101, fmt.Sprintf("t:%d:9", id)),                           // task out of range
+		press(4, chatID, 101, "t:abc:1"),                                           // not a number
+		{UpdateID: 5, CallbackQuery: &telegram.CallbackQuery{ID: "x", Data: good}}, // no message
+	}
+	if err := e.svc.HandleUpdates(context.Background(), 0); err != nil {
+		t.Fatal(err)
+	}
+	if done, _ := e.st.DoneTasks(context.Background(), id); len(done) != 0 || len(e.n.edits) != 0 {
+		t.Fatalf("ignored presses changed state: done=%v edits=%d", done, len(e.n.edits))
+	}
+}
+
+func TestPressOnUnknownDigestSaysStale(t *testing.T) {
+	e := newEnv(t)
+	cb := &fakeCallbacks{}
+	delivered(t, e, cb)
+	cb.pending = []telegram.Update{press(1, chatID, 101, "t:9999:1")}
+	e.svc.HandleUpdates(context.Background(), 0)
+	if len(cb.answers) != 1 || cb.answers[0] != "Список устарел" || len(e.n.edits) != 0 {
+		t.Fatalf("answers=%q edits=%d", cb.answers, len(e.n.edits))
+	}
+}
+
+func TestRunOnceAppliesPendingPresses(t *testing.T) {
+	e := newEnv(t)
+	cb := &fakeCallbacks{}
+	id := delivered(t, e, cb)
+	cb.pending = []telegram.Update{press(1, chatID, 101, fmt.Sprintf("t:%d:3", id))}
+	if err := e.svc.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if done, _ := e.st.DoneTasks(context.Background(), id); !done[3] {
+		t.Fatalf("pending press not applied in one-shot mode: %v", done)
+	}
+}
+
+func TestPressEditsTheMessageHoldingTheTask(t *testing.T) {
+	e := newEnv(t)
+	cb := &fakeCallbacks{}
+	e.svc.cfg.ChatID = chatID
+	e.svc.EnableCallbacks(cb)
+	e.tick(t, 0)
+	e.src.add("big", t0.Add(time.Minute), true, longSummary())
+	e.tick(t, 2*time.Minute)
+	if len(e.n.sent) < 2 {
+		t.Fatalf("expected a multi-part delivery, got %d", len(e.n.sent))
+	}
+	id, _ := e.st.SaveDigest(context.Background(), storage.Digest{MeetingID: "big"}, e.clock)
+	last := len(e.n.sent) - 1
+	lastTasks := e.n.kbs[last]
+	data := lastTasks[0][0].Data                                // first task shown in the last part
+	cb.pending = []telegram.Update{press(1, chatID, 101, data)} // pressed message id is irrelevant here
+	e.svc.HandleUpdates(context.Background(), 0)
+	if len(e.n.edits) != 1 || e.n.edits[0].id != int64(100+last+1) {
+		t.Fatalf("edit went to %+v, want message %d of part %d (digest %d)", e.n.edits, 100+last+1, last, id)
+	}
+}
+
+func TestNoTasksNoButtons(t *testing.T) {
+	e := newEnv(t)
+	e.tick(t, 0)
+	e.src.add("m1", t0.Add(time.Minute), true, "### Принятые решения\n- Делаем X\n")
+	e.tick(t, 2*time.Minute)
+	if len(e.n.sent) != 1 || e.n.kbs[0] != nil {
+		t.Fatalf("keyboard for a meeting without tasks: %+v", e.n.kbs)
+	}
+}
+
+func TestButtonLabelIsOneLineAndKeepsAssignee(t *testing.T) {
+	long := formatter.Task{Assignee: "Антон", Text: strings.Repeat("очень длинная задача ", 10)}
+	got := buttonLabel(long)
+	if n := len([]rune(got)); n > 40 || !strings.HasPrefix(got, "Антон · очень") || !strings.HasSuffix(got, "…") {
+		t.Fatalf("label = %q (%d runes)", got, n)
+	}
+	if got := buttonLabel(formatter.Task{Text: "Сделать X"}); got != "Сделать X" {
+		t.Fatalf("label = %q", got)
 	}
 }

@@ -37,3 +37,13 @@ Uses the [Telegram Bot API](https://core.telegram.org/bots/api) over plain HTTPS
 ```
 
 Sections without content are omitted. Labels are configurable constants (Russian by default, matching the request).
+
+## Task checkboxes
+
+Tasks are rendered as `☐ N. text` (grouped by assignee, numbered in display order). Under each message the bot attaches an inline keyboard with one full-width button per task shown in it (`☐ Assignee · task`, cut to 40 characters) whose callback data is `t:<digest id>:<task number>`. Telegram has no clickable elements inside message text, and native checklists (`sendChecklist`) require a Business connection, so buttons are used.
+
+- A press toggles the task in SQLite (`task_done`), redraws the message containing it with `editMessageText` (`☑ N. <s>text</s>`), and answers the callback with a short notice.
+- Only callbacks whose message is in `TELEGRAM_CHAT_ID` are honoured; malformed data, out-of-range numbers and unknown or pruned digests are ignored or answered with "Список устарел".
+- The update offset is stored after every update, so a press is never applied twice. `getUpdates` allows a single consumer: run the long-running service **or** the one-shot runner, not both.
+- A daemon (`bot run`) long-polls for presses; `bot run --once` drains pending presses at the start of each run.
+- Digests (title, date, link, summary) are kept for 60 days to re-render messages.

@@ -3,6 +3,8 @@ package formatter
 import (
 	"fmt"
 	"html"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -27,10 +29,68 @@ type Meeting struct {
 	Summary   string // Wispr markdown summary
 }
 
-// Format builds the Telegram HTML message(s) for a meeting. It returns more
-// than one message only when the content cannot fit in MaxMessageLen. loc is
-// used for the date (nil = local time).
+// Message is one Telegram message of a notification. Tasks lists the 1-based
+// numbers of the tasks shown in it, so the caller can attach checkbox buttons.
+type Message struct {
+	Text  string
+	Tasks []int
+}
+
+// Format builds the Telegram HTML message(s) for a meeting with no task done.
 func Format(m Meeting, loc *time.Location) []string {
+	msgs := FormatTasks(m, nil, loc)
+	out := make([]string, len(msgs))
+	for i, msg := range msgs {
+		out[i] = msg.Text
+	}
+	return out
+}
+
+var taskLineRe = regexp.MustCompile(`(?m)^[☐☑] (\d+)\. `)
+
+// FormatTasks builds the Telegram HTML message(s) for a meeting. It returns
+// more than one message only when the content cannot fit in MaxMessageLen.
+// Tasks are numbered checkboxes; done (by task number) marks them ☑ and
+// strikes them through. loc is used for the date (nil = local time).
+func FormatTasks(m Meeting, done map[int]bool, loc *time.Location) []Message {
+	texts := format(m, done, loc)
+	out := make([]Message, len(texts))
+	for i, t := range texts {
+		out[i].Text = t
+		for _, sub := range taskLineRe.FindAllStringSubmatch(t, -1) {
+			n, _ := strconv.Atoi(sub[1])
+			out[i].Tasks = append(out[i].Tasks, n)
+		}
+	}
+	return out
+}
+
+// DisplayTasks returns the tasks in the order they are numbered and shown:
+// assigned groups in first-appearance order, then unassigned ones.
+func DisplayTasks(summary string) []Task { return displayOrder(Parse(summary).Tasks) }
+
+func displayOrder(ts []Task) []Task {
+	var order []string
+	groups := map[string][]Task{}
+	for _, t := range ts {
+		if _, ok := groups[t.Assignee]; !ok {
+			order = append(order, t.Assignee)
+		}
+		groups[t.Assignee] = append(groups[t.Assignee], t)
+	}
+	var out []Task
+	for _, a := range order {
+		if a != "" {
+			out = append(out, groups[a]...)
+		}
+	}
+	return append(out, groups[""]...)
+}
+
+// TaskCount is the number of checkbox tasks a summary produces.
+func TaskCount(summary string) int { return len(Parse(summary).Tasks) }
+
+func format(m Meeting, done map[int]bool, loc *time.Location) []string {
 	if loc == nil {
 		loc = time.Local
 	}
@@ -47,7 +107,7 @@ func Format(m Meeting, loc *time.Location) []string {
 
 	topics := topicLines(p.Overview, p.Topics)
 	decisions := decisionLines(p.Decisions, 0)
-	tasks := taskLines(p.Tasks)
+	tasks := taskLines(p.Tasks, done)
 
 	if len(topics) == 0 && len(decisions) == 0 && len(tasks) == 0 {
 		body := []string{"", "<i>Summary пока недоступно.</i>"}
@@ -117,32 +177,47 @@ func decisionLines(ds []string, limit int) []string {
 }
 
 // taskLines groups tasks by assignee (first-appearance order); unassigned
-// tasks go last. With no assignees at all the list is flat.
-func taskLines(ts []Task) []string {
+// tasks go last. With no assignees at all the list is flat. Tasks are numbered
+// in display order and rendered as checkboxes.
+func taskLines(ts []Task, done map[int]bool) []string {
 	if len(ts) == 0 {
 		return nil
 	}
 	out := []string{"", "<b>Задачи:</b>"}
 	var order []string
-	groups := map[string][]string{}
+	groups := map[string][]Task{}
 	for _, t := range ts {
 		if _, ok := groups[t.Assignee]; !ok {
 			order = append(order, t.Assignee)
 		}
-		groups[t.Assignee] = append(groups[t.Assignee], "• "+esc(trunc(t.Text, maxLine)))
+		groups[t.Assignee] = append(groups[t.Assignee], t)
+	}
+	n := 0
+	bullets := func(group []Task) []string {
+		var lines []string
+		for _, t := range group {
+			n++
+			text := esc(trunc(t.Text, maxLine))
+			box := "☐"
+			if done[n] {
+				box, text = "☑", "<s>"+text+"</s>"
+			}
+			lines = append(lines, fmt.Sprintf("%s %d. %s", box, n, text))
+		}
+		return lines
 	}
 	if len(order) == 1 && order[0] == "" {
-		return append(out, groups[""]...)
+		return append(out, bullets(groups[""])...)
 	}
 	for _, a := range order {
 		if a != "" {
 			out = append(out, "<b>"+esc(trunc(a, 60))+":</b>")
-			out = append(out, groups[a]...)
+			out = append(out, bullets(groups[a])...)
 		}
 	}
 	if g, ok := groups[""]; ok {
 		out = append(out, "<b>Без ответственного:</b>")
-		out = append(out, g...)
+		out = append(out, bullets(g)...)
 	}
 	return out
 }

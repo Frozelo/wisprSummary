@@ -48,6 +48,10 @@ Stages are sequential; do not start Stage 3+ until Stage 1 is confirmed against 
 - Continues correctly after restart.
 - Runs locally and in Docker.
 
-## Out of scope for MVP
+## Added after the MVP
 
-LLM processing, group chats, task management commands, web UI, webhooks, other note sources, transcripts in chat.
+- Task checkboxes with inline buttons (done / not done), persisted in SQLite.
+
+## Out of scope
+
+LLM processing, group chats, other task management commands, web UI, webhooks, other note sources, transcripts in chat.
