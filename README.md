@@ -13,6 +13,8 @@ A small Go service that watches your [Wispr Flow](https://wisprflow.ai) Notetake
 
 On first start it sends nothing from your history; only meetings finishing afterwards are delivered.
 
+**Task checkboxes.** Tasks arrive as a numbered checklist (`☐ 1. …`) with buttons `☐1 ☐2 …` under the message. Pressing a button marks the task done (`☑ 1. ~~…~~`) and pressing it again undoes it; the message is redrawn and the state is kept in SQLite for 60 days. Only presses from your own chat are honoured. A running service reacts immediately; in one-shot mode (GitHub Actions) presses are applied on the next run, since Telegram keeps them for 24 hours. Only one process should read Telegram updates at a time.
+
 ## Stack
 
 Go · Wispr Flow remote MCP (OAuth 2.1 + PKCE, read-only) · Telegram Bot API · SQLite · Docker. No Redis, queues or other services.
@@ -31,7 +33,7 @@ go run ./cmd/bot telegram-test  # optional: check delivery
 go run ./cmd/bot run            # start polling (Ctrl+C to stop)
 ```
 
-Other commands: `status`, `tools`, `call <tool> [json]`, `preview <meeting-id> [--send]`, `run --once`.
+Other commands: `status`, `tools`, `call <tool> [json]`, `preview <meeting-id> [--send]`, `listen` (checkbox presses only, for testing), `run --once`.
 
 ## Docker
 

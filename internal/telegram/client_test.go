@@ -234,3 +234,82 @@ func TestWaitForStartIgnoresOldGroupAndRejectedSenders(t *testing.T) {
 		t.Fatalf("offsets = %v, want old updates skipped", offsets)
 	}
 }
+
+func TestSendMessageKBSendsKeyboardAndReturnsID(t *testing.T) {
+	var got map[string]any
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&got)
+		io.WriteString(w, `{"ok":true,"result":{"message_id":777}}`)
+	})
+	kb := Keyboard{{{Text: "☐1", Data: "t:1:1"}, {Text: "☐2", Data: "t:1:2"}}}
+	id, err := c.SendMessageKB(context.Background(), 5, "x", kb)
+	if err != nil || id != 777 {
+		t.Fatalf("id=%d err=%v", id, err)
+	}
+	rm := got["reply_markup"].(map[string]any)["inline_keyboard"].([]any)
+	btn := rm[0].([]any)[1].(map[string]any)
+	if btn["text"] != "☐2" || btn["callback_data"] != "t:1:2" {
+		t.Fatalf("keyboard json = %v", got["reply_markup"])
+	}
+}
+
+func TestEditMessage(t *testing.T) {
+	var path string
+	var got map[string]any
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		json.NewDecoder(r.Body).Decode(&got)
+		io.WriteString(w, `{"ok":true,"result":{}}`)
+	})
+	if err := c.EditMessage(context.Background(), 5, 777, "new", Keyboard{{{Text: "☑1", Data: "t:1:1"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(path, "/editMessageText") || got["message_id"] != float64(777) || got["chat_id"] != float64(5) || got["text"] != "new" {
+		t.Fatalf("path=%s body=%v", path, got)
+	}
+}
+
+func TestEditMessageNotModifiedIsNotAnError(t *testing.T) {
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"ok":false,"error_code":400,"description":"Bad Request: message is not modified: specified new message content and reply markup are exactly the same"}`)
+	})
+	if err := c.EditMessage(context.Background(), 5, 777, "same", nil); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestGetUpdatesParsesCallbackQueryAndAsksForIt(t *testing.T) {
+	var body map[string]any
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&body)
+		io.WriteString(w, `{"ok":true,"result":[{"update_id":9,"callback_query":{"id":"abc","data":"t:3:2","from":{"id":42},"message":{"message_id":55,"chat":{"id":42}}}}]}`)
+	})
+	ups, err := c.GetUpdates(context.Background(), 0, 0)
+	if err != nil || len(ups) != 1 {
+		t.Fatalf("ups=%+v err=%v", ups, err)
+	}
+	cq := ups[0].CallbackQuery
+	if cq == nil || cq.ID != "abc" || cq.Data != "t:3:2" || cq.Message.MessageID != 55 || cq.Message.Chat.ID != 42 {
+		t.Fatalf("callback = %+v", cq)
+	}
+	if fmt.Sprint(body["allowed_updates"]) != "[message callback_query]" {
+		t.Fatalf("allowed_updates = %v", body["allowed_updates"])
+	}
+}
+
+func TestAnswerCallback(t *testing.T) {
+	var path string
+	var got map[string]any
+	c, _ := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+		json.NewDecoder(r.Body).Decode(&got)
+		io.WriteString(w, `{"ok":true,"result":true}`)
+	})
+	if err := c.AnswerCallback(context.Background(), "abc", "ok"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(path, "/answerCallbackQuery") || got["callback_query_id"] != "abc" || got["text"] != "ok" {
+		t.Fatalf("path=%s body=%v", path, got)
+	}
+}

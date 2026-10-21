@@ -82,9 +82,9 @@ func TestFormatFullMessage(t *testing.T) {
 		"<b>Дата:</b> 19.10.2026",
 		"<b>Краткие итоги:</b>",
 		"<b>Принятые решения:</b>",
-		"<b>Иван:</b>\n• Реализовать /auth/refresh.\n• Добавить интеграционные тесты.",
-		"<b>Дмитрий:</b>",
-		"<b>Без ответственного:</b>\n• Согласовать сроки релиза.",
+		"<b>Иван:</b>\n☐ 1. Реализовать /auth/refresh.\n☐ 2. Добавить интеграционные тесты.",
+		"<b>Дмитрий:</b>\n☐ 3. Обновить документацию.",
+		"<b>Без ответственного:</b>\n☐ 4. Согласовать сроки релиза.",
 		`<a href="https://notes.wisprflow.ai/shared/abc">Заметка в Wispr Flow</a>`,
 	} {
 		if !strings.Contains(m, want) {
@@ -121,7 +121,7 @@ func TestFormatOmitsEmptySections(t *testing.T) {
 			t.Errorf("unexpected %q in:\n%s", bad, m)
 		}
 	}
-	if !strings.Contains(m, "<b>Задачи:</b>\n• Сделать X") {
+	if !strings.Contains(m, "<b>Задачи:</b>\n☐ 1. Сделать X") {
 		t.Errorf("flat task list expected:\n%s", m)
 	}
 }
@@ -271,5 +271,47 @@ func TestFormatUsesIntroAsRecap(t *testing.T) {
 	}
 	if strings.Contains(m, "Дима отвечает за API") {
 		t.Errorf("first bullets must not be repeated when an intro exists:\n%s", m)
+	}
+}
+
+func TestFormatTasksNumbersInDisplayOrderAndMarksDone(t *testing.T) {
+	// Parse order is A1, B1, A2; display groups by assignee: A1=1, A2=2, B1=3.
+	summary := "### Следующие шаги\n- (A) первая\n- (B) вторая\n- (A) третья\n"
+	msgs := FormatTasks(Meeting{Title: "T", Start: start, Summary: summary}, map[int]bool{2: true}, time.UTC)
+	if len(msgs) != 1 || fmt.Sprint(msgs[0].Tasks) != "[1 2 3]" {
+		t.Fatalf("msgs = %+v", msgs)
+	}
+	m := msgs[0].Text
+	for _, want := range []string{"☐ 1. первая", "☑ 2. <s>третья</s>", "☐ 3. вторая"} {
+		if !strings.Contains(m, want) {
+			t.Errorf("missing %q in:\n%s", want, m)
+		}
+	}
+	if TaskCount(summary) != 3 {
+		t.Fatalf("TaskCount = %d", TaskCount(summary))
+	}
+}
+
+func TestFormatTasksReportsTasksPerMessageWhenSplit(t *testing.T) {
+	var sb strings.Builder
+	sb.WriteString("### Следующие шаги\n")
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(&sb, "- (Иван) Задача %d: %s\n", i, strings.Repeat("слово ", 20))
+	}
+	msgs := FormatTasks(Meeting{Title: "Big", Start: start, Summary: sb.String()}, nil, time.UTC)
+	if len(msgs) < 2 {
+		t.Fatalf("expected a split, got %d", len(msgs))
+	}
+	seen := map[int]bool{}
+	for _, m := range msgs {
+		for _, n := range m.Tasks {
+			if seen[n] {
+				t.Fatalf("task %d listed in two messages", n)
+			}
+			seen[n] = true
+		}
+	}
+	if len(seen) != 60 {
+		t.Fatalf("tasks covered = %d, want 60", len(seen))
 	}
 }

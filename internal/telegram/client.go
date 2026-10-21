@@ -59,10 +59,35 @@ type apiResponse struct {
 	} `json:"parameters"`
 }
 
+// Button is an inline keyboard button; Data is returned in a callback query.
+type Button struct {
+	Text string `json:"text"`
+	Data string `json:"callback_data"`
+}
+
+// Keyboard is an inline keyboard: rows of buttons. Nil means no keyboard.
+type Keyboard [][]Button
+
+// CallbackQuery is a button press.
+type CallbackQuery struct {
+	ID   string `json:"id"`
+	Data string `json:"data"`
+	From struct {
+		ID int64 `json:"id"`
+	} `json:"from"`
+	Message *struct {
+		MessageID int64 `json:"message_id"`
+		Chat      struct {
+			ID int64 `json:"id"`
+		} `json:"chat"`
+	} `json:"message"`
+}
+
 // Update is the part of a Bot API update we use.
 type Update struct {
-	UpdateID int64 `json:"update_id"`
-	Message  *struct {
+	UpdateID      int64          `json:"update_id"`
+	CallbackQuery *CallbackQuery `json:"callback_query"`
+	Message       *struct {
 		Text string `json:"text"`
 		From struct {
 			FirstName string `json:"first_name"`
@@ -77,10 +102,17 @@ type Update struct {
 }
 
 // SendMessage sends HTML text to chatID, retrying on 429 (honoring retry_after),
-// 5xx and network errors.
+// 5xx and dial errors.
 func (c *Client) SendMessage(ctx context.Context, chatID int64, html string) error {
+	_, err := c.SendMessageKB(ctx, chatID, html, nil)
+	return err
+}
+
+// SendMessageKB is SendMessage with an optional inline keyboard; it returns the
+// id of the sent message so it can be edited later.
+func (c *Client) SendMessageKB(ctx context.Context, chatID int64, html string, kb Keyboard) (int64, error) {
 	if utf8.RuneCountInString(html) > MaxTextLen {
-		return ErrTooLong
+		return 0, ErrTooLong
 	}
 	body := map[string]any{
 		"chat_id":              chatID,
@@ -88,11 +120,58 @@ func (c *Client) SendMessage(ctx context.Context, chatID int64, html string) err
 		"parse_mode":           "HTML",
 		"link_preview_options": map[string]any{"is_disabled": true},
 	}
+	if len(kb) > 0 {
+		body["reply_markup"] = map[string]any{"inline_keyboard": kb}
+	}
+	var raw json.RawMessage
 	// sendMessage is not idempotent: only retry when the request provably never reached Telegram.
-	return c.withRetry(ctx, func() error {
-		_, err := c.call(ctx, "sendMessage", body, false)
+	err := c.withRetry(ctx, func() error {
+		r, err := c.call(ctx, "sendMessage", body, false)
+		raw = r
 		return err
 	})
+	if err != nil {
+		return 0, err
+	}
+	var sent struct {
+		MessageID int64 `json:"message_id"`
+	}
+	_ = json.Unmarshal(raw, &sent)
+	return sent.MessageID, nil
+}
+
+// EditMessage replaces the text and keyboard of a sent message. Editing to
+// identical content is not an error.
+func (c *Client) EditMessage(ctx context.Context, chatID, messageID int64, html string, kb Keyboard) error {
+	if utf8.RuneCountInString(html) > MaxTextLen {
+		return ErrTooLong
+	}
+	body := map[string]any{
+		"chat_id":              chatID,
+		"message_id":           messageID,
+		"text":                 html,
+		"parse_mode":           "HTML",
+		"link_preview_options": map[string]any{"is_disabled": true},
+		"reply_markup":         map[string]any{"inline_keyboard": kb}, // empty keyboard removes it
+	}
+	if kb == nil {
+		body["reply_markup"] = map[string]any{"inline_keyboard": [][]Button{}}
+	}
+	err := c.withRetry(ctx, func() error {
+		_, err := c.call(ctx, "editMessageText", body, true)
+		return err
+	})
+	if ae, ok := errors.AsType[*APIError](err); ok && strings.Contains(ae.Description, "message is not modified") {
+		return nil
+	}
+	return err
+}
+
+// AnswerCallback acknowledges a button press (stops the client's spinner) and
+// optionally shows a short notice. A stale query is not worth failing over.
+func (c *Client) AnswerCallback(ctx context.Context, id, text string) error {
+	_, err := c.call(ctx, "answerCallbackQuery", map[string]any{"callback_query_id": id, "text": text}, true)
+	return err
 }
 
 // GetUpdates long-polls for new messages. timeout is in seconds.
@@ -100,7 +179,7 @@ func (c *Client) GetUpdates(ctx context.Context, offset int64, timeout int) ([]U
 	body := map[string]any{
 		"offset":          offset,
 		"timeout":         timeout,
-		"allowed_updates": []string{"message"},
+		"allowed_updates": []string{"message", "callback_query"},
 	}
 	var raw json.RawMessage
 	err := c.withRetry(ctx, func() error {
@@ -285,10 +364,24 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 	}
 }
 
-// Chat sends messages to one fixed chat; it is the only sink the service uses.
+// Chat talks to one fixed chat; it is the only chat the service uses.
 type Chat struct {
 	C  *Client
 	ID int64
 }
 
-func (c Chat) Send(ctx context.Context, html string) error { return c.C.SendMessage(ctx, c.ID, html) }
+func (c Chat) Send(ctx context.Context, html string, kb Keyboard) (int64, error) {
+	return c.C.SendMessageKB(ctx, c.ID, html, kb)
+}
+
+func (c Chat) Edit(ctx context.Context, messageID int64, html string, kb Keyboard) error {
+	return c.C.EditMessage(ctx, c.ID, messageID, html, kb)
+}
+
+func (c Chat) Updates(ctx context.Context, offset int64, timeoutSec int) ([]Update, error) {
+	return c.C.GetUpdates(ctx, offset, timeoutSec)
+}
+
+func (c Chat) Answer(ctx context.Context, callbackID, text string) error {
+	return c.C.AnswerCallback(ctx, callbackID, text)
+}

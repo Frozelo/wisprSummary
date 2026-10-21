@@ -33,6 +33,7 @@ commands:
   call     call a Wispr MCP tool: bot call <tool> [json-args]
   telegram-setup  wait for /start in a private chat and print its chat id
   telegram-test   send a test message to TELEGRAM_CHAT_ID
+  listen   handle task checkbox presses only (no Wispr polling), for testing
   preview  format a real meeting: bot preview <meeting-id> [--send]
 `
 
@@ -72,6 +73,8 @@ func main() {
 		err = call(ctx, cfg, os.Args[2:])
 	case "telegram-setup":
 		err = telegramSetup(ctx, cfg)
+	case "listen":
+		err = listen(ctx, cfg)
 	case "preview":
 		err = preview(ctx, cfg, os.Args[2:])
 	case "telegram-test":
@@ -209,23 +212,52 @@ func preview(ctx context.Context, cfg config.Config, args []string) error {
 	}
 	msgs := formatter.Format(formatter.Meeting{
 		Title: m.Title, Start: m.Start, ShareLink: m.ShareLink, Summary: m.Summary,
-	}, time.Local)
+	}, cfg.Location)
 	for i, msg := range msgs {
 		fmt.Printf("--- message %d/%d ---\n%s\n", i+1, len(msgs), msg)
 	}
 	if send {
-		tg, err := newTelegram(cfg)
+		svc, closeDB, err := newService(cfg, client)
 		if err != nil {
 			return err
 		}
-		for _, msg := range msgs {
-			if err := tg.SendMessage(ctx, cfg.TelegramChatID, msg); err != nil {
-				return err
-			}
+		defer closeDB()
+		// A unique id per preview: it must not collide with real meetings.
+		id := fmt.Sprintf("preview:%s:%d", args[0], time.Now().UnixNano())
+		if err := svc.Deliver(ctx, id, formatter.Meeting{
+			Title: m.Title, Start: m.Start, ShareLink: m.ShareLink, Summary: m.Summary,
+		}); err != nil {
+			return err
 		}
-		fmt.Println("sent")
+		fmt.Println("sent (checkboxes work while `bot listen` or `bot run` is running)")
 	}
 	return nil
+}
+
+// newService wires the polling service. The returned func closes the database.
+func newService(cfg config.Config, src meeting.Source) (*meeting.Service, func(), error) {
+	tg, err := newTelegram(cfg)
+	if err != nil {
+		return nil, nil, err
+	}
+	if cfg.TelegramChatID == 0 {
+		return nil, nil, errors.New("TELEGRAM_CHAT_ID is not set (run telegram-setup)")
+	}
+	db, err := storage.Open(cfg.DBFile)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open database: %w", err)
+	}
+	chat := telegram.Chat{C: tg, ID: cfg.TelegramChatID}
+	svc := meeting.NewService(meeting.Config{
+		Interval: cfg.PollInterval,
+		Lookback: cfg.Lookback,
+		Backfill: cfg.Backfill,
+		Loc:      cfg.Location,
+		SelfName: cfg.SelfName,
+		ChatID:   cfg.TelegramChatID,
+	}, src, chat, db, slog.Default())
+	svc.EnableCallbacks(chat)
+	return svc, func() { db.Close() }, nil
 }
 
 func run(ctx context.Context, cfg config.Config, args []string) error {
@@ -236,29 +268,14 @@ func run(ctx context.Context, cfg config.Config, args []string) error {
 		}
 		once = true
 	}
-	tg, err := newTelegram(cfg)
-	if err != nil {
-		return err
-	}
-	if cfg.TelegramChatID == 0 {
-		return errors.New("TELEGRAM_CHAT_ID is not set (run telegram-setup)")
-	}
 	if _, err := (wispr.TokenStore{Path: cfg.TokenFile}).Load(); err != nil {
 		return err
 	}
-	db, err := storage.Open(cfg.DBFile)
+	svc, closeDB, err := newService(cfg, newClient(cfg))
 	if err != nil {
-		return fmt.Errorf("open database: %w", err)
+		return err
 	}
-	defer db.Close()
-
-	svc := meeting.NewService(meeting.Config{
-		Interval: cfg.PollInterval,
-		Lookback: cfg.Lookback,
-		Backfill: cfg.Backfill,
-		Loc:      cfg.Location,
-		SelfName: cfg.SelfName,
-	}, newClient(cfg), telegram.Chat{C: tg, ID: cfg.TelegramChatID}, db, slog.Default())
+	defer closeDB()
 
 	if once {
 		return svc.RunOnce(ctx)
@@ -267,4 +284,16 @@ func run(ctx context.Context, cfg config.Config, args []string) error {
 	err = svc.Run(ctx)
 	slog.Info("stopped")
 	return err
+}
+
+// listen handles checkbox presses only; it never touches Wispr.
+func listen(ctx context.Context, cfg config.Config) error {
+	svc, closeDB, err := newService(cfg, newClient(cfg))
+	if err != nil {
+		return err
+	}
+	defer closeDB()
+	fmt.Println("Listening for task checkbox presses (Ctrl+C to stop)...")
+	svc.Listen(ctx)
+	return nil
 }
