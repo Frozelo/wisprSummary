@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Frozelo/wisprSummary/internal/formatter"
 	"github.com/Frozelo/wisprSummary/internal/storage"
 	"github.com/Frozelo/wisprSummary/internal/telegram"
 	"github.com/Frozelo/wisprSummary/internal/wispr"
@@ -679,11 +680,14 @@ func TestDeliveredMessageHasCheckboxButtons(t *testing.T) {
 	cb := &fakeCallbacks{}
 	id := delivered(t, e, cb)
 	kb := e.n.kbs[0]
-	if len(kb) != 1 || len(kb[0]) != 3 {
-		t.Fatalf("keyboard = %+v", kb)
+	if len(kb) != 3 || len(kb[0]) != 1 {
+		t.Fatalf("want one full-width button per task, got %+v", kb)
 	}
-	if kb[0][0].Text != "☐1" || kb[0][0].Data != fmt.Sprintf("t:%d:1", id) {
+	if kb[0][0].Text != "☐ Иван · Первая" || kb[0][0].Data != fmt.Sprintf("t:%d:1", id) {
 		t.Fatalf("button = %+v", kb[0][0])
+	}
+	if kb[2][0].Text != "☐ Дима · Третья" {
+		t.Fatalf("button = %+v", kb[2][0])
 	}
 	if !strings.Contains(e.n.sent[0], "☐ 1. Первая") {
 		t.Fatalf("text = %s", e.n.sent[0])
@@ -707,7 +711,7 @@ func TestPressTogglesTaskAndRedrawsMessage(t *testing.T) {
 	if ed.id != 101 || !strings.Contains(ed.text, "☑ 2. <s>Вторая</s>") || !strings.Contains(ed.text, "☐ 1. Первая") {
 		t.Fatalf("edit = %+v", ed)
 	}
-	if ed.kb[0][1].Text != "☑2" || ed.kb[0][0].Text != "☐1" {
+	if ed.kb[1][0].Text != "☑ Иван · Вторая" || ed.kb[0][0].Text != "☐ Иван · Первая" {
 		t.Fatalf("keyboard = %+v", ed.kb)
 	}
 	if cb.answers[0] != "✓ Выполнено" {
@@ -820,5 +824,16 @@ func TestNoTasksNoButtons(t *testing.T) {
 	e.tick(t, 2*time.Minute)
 	if len(e.n.sent) != 1 || e.n.kbs[0] != nil {
 		t.Fatalf("keyboard for a meeting without tasks: %+v", e.n.kbs)
+	}
+}
+
+func TestButtonLabelIsOneLineAndKeepsAssignee(t *testing.T) {
+	long := formatter.Task{Assignee: "Антон", Text: strings.Repeat("очень длинная задача ", 10)}
+	got := buttonLabel(long)
+	if n := len([]rune(got)); n > 40 || !strings.HasPrefix(got, "Антон · очень") || !strings.HasSuffix(got, "…") {
+		t.Fatalf("label = %q (%d runes)", got, n)
+	}
+	if got := buttonLabel(formatter.Task{Text: "Сделать X"}); got != "Сделать X" {
+		t.Fatalf("label = %q", got)
 	}
 }

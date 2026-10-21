@@ -65,6 +65,28 @@ func FormatTasks(m Meeting, done map[int]bool, loc *time.Location) []Message {
 	return out
 }
 
+// DisplayTasks returns the tasks in the order they are numbered and shown:
+// assigned groups in first-appearance order, then unassigned ones.
+func DisplayTasks(summary string) []Task { return displayOrder(Parse(summary).Tasks) }
+
+func displayOrder(ts []Task) []Task {
+	var order []string
+	groups := map[string][]Task{}
+	for _, t := range ts {
+		if _, ok := groups[t.Assignee]; !ok {
+			order = append(order, t.Assignee)
+		}
+		groups[t.Assignee] = append(groups[t.Assignee], t)
+	}
+	var out []Task
+	for _, a := range order {
+		if a != "" {
+			out = append(out, groups[a]...)
+		}
+	}
+	return append(out, groups[""]...)
+}
+
 // TaskCount is the number of checkbox tasks a summary produces.
 func TaskCount(summary string) int { return len(Parse(summary).Tasks) }
 

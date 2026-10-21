@@ -40,7 +40,7 @@ Sections without content are omitted. Labels are configurable constants (Russian
 
 ## Task checkboxes
 
-Tasks are rendered as `☐ N. text` (grouped by assignee, numbered in display order). Under each message the bot attaches an inline keyboard with one button per task (`☐N`, five per row) whose callback data is `t:<digest id>:<task number>`.
+Tasks are rendered as `☐ N. text` (grouped by assignee, numbered in display order). Under each message the bot attaches an inline keyboard with one full-width button per task shown in it (`☐ Assignee · task`, cut to 40 characters) whose callback data is `t:<digest id>:<task number>`. Telegram has no clickable elements inside message text, and native checklists (`sendChecklist`) require a Business connection, so buttons are used.
 
 - A press toggles the task in SQLite (`task_done`), redraws the message containing it with `editMessageText` (`☑ N. <s>text</s>`), and answers the callback with a short notice.
 - Only callbacks whose message is in `TELEGRAM_CHAT_ID` are honoured; malformed data, out-of-range numbers and unknown or pruned digests are ignored or answered with "Список устарел".

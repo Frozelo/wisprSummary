@@ -13,7 +13,7 @@ A small Go service that watches your [Wispr Flow](https://wisprflow.ai) Notetake
 
 On first start it sends nothing from your history; only meetings finishing afterwards are delivered.
 
-**Task checkboxes.** Tasks arrive as a numbered checklist (`☐ 1. …`) with buttons `☐1 ☐2 …` under the message. Pressing a button marks the task done (`☑ 1. ~~…~~`) and pressing it again undoes it; the message is redrawn and the state is kept in SQLite for 60 days. Only presses from your own chat are honoured. A running service reacts immediately; in one-shot mode (GitHub Actions) presses are applied on the next run, since Telegram keeps them for 24 hours. Only one process should read Telegram updates at a time.
+**Task checkboxes.** Tasks arrive as a numbered checklist (`☐ 1. …`) with one button per task under the message (`☐ Антон · Сделать дизайн…`, cut to one line). Pressing a button marks the task done (`☑ 1. ~~…~~`) and pressing it again undoes it; the message is redrawn and the state is kept in SQLite for 60 days. Only presses from your own chat are honoured. A running service reacts immediately; in one-shot mode (GitHub Actions) presses are applied on the next run, since Telegram keeps them for 24 hours. Only one process should read Telegram updates at a time.
 
 ## Stack
 

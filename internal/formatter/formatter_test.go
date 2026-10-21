@@ -315,3 +315,21 @@ func TestFormatTasksReportsTasksPerMessageWhenSplit(t *testing.T) {
 		t.Fatalf("tasks covered = %d, want 60", len(seen))
 	}
 }
+
+func TestDisplayTasksMatchesNumbering(t *testing.T) {
+	summary := "### Следующие шаги\n- (A) первая\n- вторая без исполнителя\n- (B) третья\n- (A) четвёртая\n"
+	got := DisplayTasks(summary)
+	var texts []string
+	for _, tk := range got {
+		texts = append(texts, tk.Text)
+	}
+	if fmt.Sprint(texts) != "[первая четвёртая третья вторая без исполнителя]" {
+		t.Fatalf("display order = %v", texts)
+	}
+	m := FormatTasks(Meeting{Title: "T", Start: start, Summary: summary}, nil, time.UTC)[0].Text
+	for i, tk := range got {
+		if !strings.Contains(m, fmt.Sprintf("%d. %s", i+1, tk.Text)) {
+			t.Errorf("task %d (%q) is not numbered %d in:\n%s", i+1, tk.Text, i+1, m)
+		}
+	}
+}

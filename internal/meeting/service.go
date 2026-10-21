@@ -413,7 +413,7 @@ func (s *Service) Deliver(ctx context.Context, id string, fm formatter.Meeting) 
 	}
 	// Resume after the parts already delivered so a retry never repeats them.
 	for i := s.partsSent(ctx, id); i < len(msgs); i++ {
-		msgID, err := s.notify.Send(ctx, msgs[i].Text, keyboard(digestID, msgs[i].Tasks, nil))
+		msgID, err := s.notify.Send(ctx, msgs[i].Text, keyboard(digestID, msgs[i].Tasks, nil, formatter.DisplayTasks(fm.Summary)))
 		if err != nil {
 			return fmt.Errorf("send part %d/%d: %w", i+1, len(msgs), err)
 		}
@@ -476,27 +476,41 @@ func (s *Service) recordFailure(m wispr.MeetingInfo, err error) {
 	s.log.Error("meeting failed; will retry", "id", m.ID, "attempt", f.n, "retry_in", backoff, "err", err)
 }
 
-// keyboard builds checkbox buttons (5 per row) for the given task numbers.
-func keyboard(digestID int64, tasks []int, done map[int]bool) telegram.Keyboard {
+// keyboard builds one full-width checkbox button per task shown in a message.
+// display holds all tasks in display order (button n labels task n).
+func keyboard(digestID int64, tasks []int, done map[int]bool, display []formatter.Task) telegram.Keyboard {
 	if digestID == 0 || len(tasks) == 0 {
 		return nil
 	}
 	var kb telegram.Keyboard
-	var row []telegram.Button
 	for _, n := range tasks {
 		box := "☐"
 		if done[n] {
 			box = "☑"
 		}
-		row = append(row, telegram.Button{Text: box + strconv.Itoa(n), Data: fmt.Sprintf("t:%d:%d", digestID, n)})
-		if len(row) == 5 {
-			kb, row = append(kb, row), nil
+		label := ""
+		if n >= 1 && n <= len(display) {
+			label = buttonLabel(display[n-1])
 		}
-	}
-	if len(row) > 0 {
-		kb = append(kb, row)
+		kb = append(kb, []telegram.Button{{
+			Text: strings.TrimSpace(box + " " + label),
+			Data: fmt.Sprintf("t:%d:%d", digestID, n),
+		}})
 	}
 	return kb
+}
+
+// buttonLabel is "Assignee · task", cut to what fits on one line of a button.
+func buttonLabel(t formatter.Task) string {
+	const max = 40
+	text := t.Text
+	if t.Assignee != "" {
+		text = t.Assignee + " · " + text
+	}
+	if r := []rune(text); len(r) > max {
+		text = strings.TrimSpace(string(r[:max-1])) + "…"
+	}
+	return text
 }
 
 const offsetKey = "tg_offset"
@@ -615,7 +629,7 @@ func (s *Service) rerender(ctx context.Context, d storage.Digest, task int, pres
 			if id == 0 {
 				id = pressedMsg
 			}
-			return s.notify.Edit(ctx, id, m.Text, keyboard(d.ID, m.Tasks, done))
+			return s.notify.Edit(ctx, id, m.Text, keyboard(d.ID, m.Tasks, done, formatter.DisplayTasks(d.Summary)))
 		}
 	}
 	return nil
