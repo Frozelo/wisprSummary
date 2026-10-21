@@ -71,6 +71,10 @@ MVP implementation: `MarkdownExtractor` (no LLM). A later `LLMExtractor` swaps i
 
 **Late edits:** a meeting is sent once only. Later summary modifications are ignored in MVP.
 
+## Watermark (as implemented)
+
+Wispr lists meetings by `modified_at`, newest first, so the service keeps one watermark `W` in SQLite and scans pages down to `W`. After a successful tick `W = max(W, min(tickStart − 10m, oldest pending meeting))`, never older than `tickStart − LOOKBACK`. "Pending" means not finalized, summary not ready, or last send failed. First run sets `W = now − BACKFILL_HOURS`, so history is not replayed. Meetings with a finalized flag but an empty summary wait 10 minutes after they end, then are skipped and marked processed (no empty notifications). Shared (someone else's) meetings are ignored.
+
 ## Retries & errors
 
 - HTTP client timeouts (connect/TLS 10s, total 30s per request).

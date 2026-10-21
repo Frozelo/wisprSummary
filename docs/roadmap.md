@@ -24,8 +24,8 @@ Stages are sequential; do not start Stage 3+ until Stage 1 is confirmed against 
 
 ## Stage 4 — Automation
 
-- [ ] SQLite store, first-run watermark, dedup.
-- [ ] Poll loop (2 min), pagination, per-meeting retry, graceful shutdown.
+- [x] SQLite store, first-run watermark, dedup.
+- [x] Poll loop (2 min), pagination, per-meeting retry, graceful shutdown (`bot run`).
 
 ## Stage 5 — Finalization
 

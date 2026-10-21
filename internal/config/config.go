@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 const defaultMCPURL = "https://api.wisprflow.ai/connect/mcp"
@@ -20,6 +21,12 @@ type Config struct {
 
 	TelegramBotToken string
 	TelegramChatID   int64 // 0 = not configured
+
+	PollInterval time.Duration
+	Lookback     time.Duration
+	Backfill     time.Duration // BACKFILL_HOURS: meetings to send on first run
+	Location     *time.Location
+	DBFile       string
 }
 
 // Load reads configuration from the environment, after filling unset
@@ -35,7 +42,30 @@ func Load() Config {
 
 		TelegramBotToken: getenv("TELEGRAM_BOT_TOKEN", ""),
 		TelegramChatID:   parseInt64(getenv("TELEGRAM_CHAT_ID", "")),
+
+		PollInterval: parseDuration(getenv("POLL_INTERVAL", ""), 2*time.Minute),
+		Lookback:     parseDuration(getenv("LOOKBACK", ""), 48*time.Hour),
+		Backfill:     time.Duration(parseInt64(getenv("BACKFILL_HOURS", ""))) * time.Hour,
+		Location:     parseLocation(getenv("TIMEZONE", "")),
+		DBFile:       filepath.Join(dir, "state.db"),
 	}
+}
+
+func parseDuration(s string, def time.Duration) time.Duration {
+	if d, err := time.ParseDuration(s); err == nil && d > 0 {
+		return d
+	}
+	return def
+}
+
+// parseLocation resolves an IANA name; empty or invalid falls back to local time.
+func parseLocation(name string) *time.Location {
+	if name != "" {
+		if loc, err := time.LoadLocation(name); err == nil {
+			return loc
+		}
+	}
+	return time.Local
 }
 
 func parseInt64(s string) int64 {
