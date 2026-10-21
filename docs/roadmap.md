@@ -6,21 +6,21 @@ Stages are sequential; do not start Stage 3+ until Stage 1 is confirmed against 
 
 - [x] `login` command: discovery → DCR → Authorization Code + PKCE → store refresh token.
 - [x] MCP Streamable HTTP client: `initialize`, `tools/list`, `tools/call` (`bot tools`, `bot call`).
-- [ ] Record real `search_meetings` / `get_meeting` responses as sanitized fixtures in `internal/wispr/testdata/`.
-- [ ] Resolve every **VERIFY** item in [wispr-mcp.md](wispr-mcp.md) and update the doc.
+- [x] Real response shapes verified (see wispr-mcp.md); tests use synthetic fixtures because real ones contain personal data.
+- [x] **VERIFY** items resolved except: shape of non-empty `todos`, and whether Wispr rotates refresh tokens (the client persists rotated tokens either way).
 - Exit: list of recent meetings printed by CLI, token survives restart and refresh.
 
 ## Stage 2 — Telegram
 
 - [x] `sendMessage` (HTML), 429 handling, timeouts.
 - [x] `telegram-setup`: capture chat id on `/start` (needs your bot token, see `.env.example`).
-- [ ] Test message to the allowed chat only.
+- [x] Test message to the allowed chat only.
 
 ## Stage 3 — Meeting processing
 
 - [x] Summary parser: decisions, next steps, assignees, empty-summary handling.
 - [x] Formatter with HTML escaping and 4096-char limit.
-- [ ] `Extractor` interface (deferred to Stage 4: `formatter.Parse` is the Markdown implementation; add the interface where `meeting` consumes it).
+- [ ] `Extractor` interface — deferred past the MVP: `formatter.Parse` is the Markdown implementation; add the interface where `meeting` consumes it when an LLM processor is introduced.
 
 ## Stage 4 — Automation
 
@@ -29,7 +29,7 @@ Stages are sequential; do not start Stage 3+ until Stage 1 is confirmed against 
 
 ## Stage 5 — Finalization
 
-- [ ] Unit tests (below), `Dockerfile`, `.env.example`, README run instructions.
+- [x] Unit tests (below), `Dockerfile`, `docker-compose.yml`, CI, GHCR image, `.env.example`, README and deploy guide.
 
 ## Unit tests (mocks for Wispr and Telegram)
 
