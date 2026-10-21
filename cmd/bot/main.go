@@ -186,6 +186,16 @@ func preview(ctx context.Context, cfg config.Config, args []string) error {
 	if len(args) < 1 {
 		return errors.New("usage: bot preview <meeting-id> [--send]")
 	}
+	send := false
+	for _, a := range args[1:] {
+		if a != "--send" {
+			return fmt.Errorf("unknown argument %q (usage: bot preview <meeting-id> [--send])", a)
+		}
+		send = true
+	}
+	if send && cfg.TelegramChatID == 0 {
+		return errors.New("TELEGRAM_CHAT_ID is not set (run telegram-setup)")
+	}
 	m, err := newClient(cfg).GetMeeting(ctx, args[0])
 	if err != nil {
 		return err
@@ -196,7 +206,7 @@ func preview(ctx context.Context, cfg config.Config, args []string) error {
 	for i, msg := range msgs {
 		fmt.Printf("--- message %d/%d ---\n%s\n", i+1, len(msgs), msg)
 	}
-	if len(args) > 1 && args[1] == "--send" {
+	if send {
 		tg, err := newTelegram(cfg)
 		if err != nil {
 			return err

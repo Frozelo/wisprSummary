@@ -162,3 +162,72 @@ func TestFormatSplitsLongMessages(t *testing.T) {
 		t.Error("tasks lost or link not in the last message")
 	}
 }
+
+func TestParseHeadingMustStartWithKeyword(t *testing.T) {
+	p := Parse("### Первые шаги онбординга\n- обсудили роли\n\n### Решение проблемы с JWT\n- токены живут долго\n")
+	if len(p.Tasks) != 0 || len(p.Decisions) != 0 || len(p.Topics) != 2 {
+		t.Fatalf("topic headings misread: %+v", p)
+	}
+}
+
+func TestParseNestedBulletsStayWithParent(t *testing.T) {
+	p := Parse("### Следующие шаги\n- (Иван) Подготовить релиз\n  - обновить changelog\n  - проверить CI\n- (Дмитрий) Обновить доки\n")
+	if len(p.Tasks) != 2 {
+		t.Fatalf("tasks = %v", p.Tasks)
+	}
+	if p.Tasks[0] != (Task{"Иван", "Подготовить релиз — обновить changelog; проверить CI"}) {
+		t.Fatalf("task 0 = %+v", p.Tasks[0])
+	}
+}
+
+func TestParseAssigneeMustLookLikeName(t *testing.T) {
+	cases := map[string]string{
+		"(Иван) Сделать":           "Иван",
+		"(Иван, Дмитрий) Сделать":  "Иван, Дмитрий",
+		"(Все участники) Сделать":  "Все участники",
+		"(если успеем) Сделать":    "",
+		"(срочно) Сделать":         "",
+		"(иван и дмитрий) Сделать": "",
+	}
+	for in, want := range cases {
+		task := Parse("### Следующие шаги\n- " + in + "\n").Tasks[0]
+		if task.Assignee != want {
+			t.Errorf("%q: assignee = %q, want %q", in, task.Assignee, want)
+		}
+	}
+}
+
+func TestCleanKeepsGlobsAndUnderscores(t *testing.T) {
+	if got := clean("Исключить *.log и *.tmp, файл __init__.py"); got != "Исключить *.log и *.tmp, файл __init__.py" {
+		t.Fatalf("clean mangled text: %q", got)
+	}
+	if got := clean("это *важно* и **очень**"); got != "это важно и очень" {
+		t.Fatalf("clean = %q", got)
+	}
+}
+
+func TestFormatTruncatesLongTitle(t *testing.T) {
+	m := Format(Meeting{Title: strings.Repeat("я", 6000), Start: start, Summary: sample}, time.UTC)
+	for i, msg := range m {
+		if n := utf8.RuneCountInString(msg); n > MaxMessageLen {
+			t.Errorf("message %d has %d runes", i, n)
+		}
+	}
+}
+
+func TestSplitRepeatsAssigneeHeading(t *testing.T) {
+	var sb strings.Builder
+	sb.WriteString("### Следующие шаги\n")
+	for i := 0; i < 60; i++ {
+		fmt.Fprintf(&sb, "- (Иван) Задача %d: %s\n", i, strings.Repeat("слово ", 20))
+	}
+	msgs := Format(Meeting{Title: "Big", Start: start, Summary: sb.String()}, time.UTC)
+	if len(msgs) < 2 {
+		t.Fatalf("expected a split, got %d", len(msgs))
+	}
+	for i, m := range msgs[1:] {
+		if !strings.Contains(m, "<b>Иван:</b>") {
+			t.Errorf("continuation %d lost the assignee heading:\n%.200s", i+1, m)
+		}
+	}
+}
