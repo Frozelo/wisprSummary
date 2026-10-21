@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -201,5 +202,21 @@ func TestLoginStateMismatch(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected state mismatch error")
+	}
+}
+
+func TestMeetingPageSkipsMalformedItems(t *testing.T) {
+	var p MeetingPage
+	in := `{"meetings":[
+		{"id":"a","title":"ok","start":"2026-10-20T09:00:00Z","modified_at":"2026-10-20T10:00:00Z"},
+		{"id":"b","title":"bad","start":"","modified_at":"nope"},
+		{"id":"c","title":"ok2","start":null,"modified_at":"2026-10-20T11:00:00Z"}],
+		"has_more":true,"next_cursor":"xyz"}`
+	if err := json.Unmarshal([]byte(in), &p); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Meetings) != 2 || p.Skipped != 1 || !p.HasMore || p.NextCursor != "xyz" ||
+		p.Meetings[0].ID != "a" || p.Meetings[1].ID != "c" {
+		t.Fatalf("page = %+v", p)
 	}
 }

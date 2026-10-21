@@ -117,6 +117,8 @@ Confirmed with the Go client against the real server (`bot login`, `bot tools`, 
 - Page also returns `count`, `has_more`, `next_cursor`, `more`.
 - `get_meeting` keys: `id, title, content, summary, finalized, has_transcript, attendees, todos, start, end, modified_at, share_link`. `todos` was an empty list for the meetings tried, `content` (user notes) was empty, and `summary` is markdown using `###` headings. `summary` may be absent/empty for very short recordings.
 
+Summary conventions seen across 15 real meetings (Russian locale): `### Принятые решения` (plain bullets), `### Следующие шаги` / `### Дальнейшие шаги` (bullets as `- (Исполнитель) задача`, sometimes without an assignee), other `###` headings are topics. Long structured notes may use numbered `##` headings. `todos` was empty in all 15. The parser (`internal/formatter/parse.go`) is keyed on these headings and is table-driven.
+
 Still open: `todos` shape when non-empty, which heading names Wispr uses for next steps across languages, refresh-token rotation behaviour (the client already persists rotated tokens).
 
 ## Implementation notes

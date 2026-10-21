@@ -18,9 +18,9 @@ Stages are sequential; do not start Stage 3+ until Stage 1 is confirmed against 
 
 ## Stage 3 — Meeting processing
 
-- [ ] Summary parser: decisions, next steps, assignees, empty-summary handling.
-- [ ] Formatter with HTML escaping and 4096-char limit.
-- [ ] `Extractor` interface with Markdown implementation.
+- [x] Summary parser: decisions, next steps, assignees, empty-summary handling.
+- [x] Formatter with HTML escaping and 4096-char limit.
+- [ ] `Extractor` interface (deferred to Stage 4: `formatter.Parse` is the Markdown implementation; add the interface where `meeting` consumes it).
 
 ## Stage 4 — Automation
 
