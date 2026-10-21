@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,10 +10,12 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/Frozelo/wisprSummary/internal/config"
+	"github.com/Frozelo/wisprSummary/internal/telegram"
 	"github.com/Frozelo/wisprSummary/internal/wispr"
 )
 
@@ -23,6 +26,8 @@ commands:
   status   show whether a Wispr session is stored
   tools    list Wispr MCP tools with their input schemas
   call     call a Wispr MCP tool: bot call <tool> [json-args]
+  telegram-setup  wait for /start in a private chat and print its chat id
+  telegram-test   send a test message to TELEGRAM_CHAT_ID
 `
 
 func main() {
@@ -33,10 +38,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(2)
+	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: cfg.LogLevel})))
 
-	var err error
 	switch os.Args[1] {
 	case "login":
 		err = wispr.Login(ctx, wispr.LoginOptions{
@@ -54,6 +62,10 @@ func main() {
 		err = tools(ctx, cfg)
 	case "call":
 		err = call(ctx, cfg, os.Args[2:])
+	case "telegram-setup":
+		err = telegramSetup(ctx, cfg)
+	case "telegram-test":
+		err = telegramTest(ctx, cfg)
 	default:
 		fmt.Fprint(os.Stderr, usage)
 		os.Exit(2)
@@ -113,5 +125,48 @@ func call(ctx context.Context, cfg config.Config, args []string) error {
 		fmt.Printf("structuredContent: %s\n", res.StructuredContent)
 	}
 	fmt.Println(res.Text())
+	return nil
+}
+
+func newTelegram(cfg config.Config) (*telegram.Client, error) {
+	if cfg.TelegramBotToken == "" {
+		return nil, errors.New("TELEGRAM_BOT_TOKEN is not set (see .env.example)")
+	}
+	return telegram.New(cfg.TelegramBotToken, &http.Client{Timeout: 45 * time.Second}), nil
+}
+
+// telegramSetup waits for /start in a private chat, asks the operator to
+// confirm the sender, and prints the chat id.
+func telegramSetup(ctx context.Context, cfg config.Config) error {
+	tg, err := newTelegram(cfg)
+	if err != nil {
+		return err
+	}
+	fmt.Println("Send /start to your bot from your personal Telegram account (Ctrl+C to cancel)...")
+	in := bufio.NewReader(os.Stdin)
+	id, err := tg.WaitForStart(ctx, func(s telegram.Sender) bool {
+		fmt.Printf("\nGot /start from %s (chat id %d). Is this you? [y/N]: ", s.Name, s.ChatID)
+		line, _ := in.ReadString('\n')
+		return strings.HasPrefix(strings.ToLower(strings.TrimSpace(line)), "y")
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("\nAdd to .env:  TELEGRAM_CHAT_ID=%d\n", id)
+	return nil
+}
+
+func telegramTest(ctx context.Context, cfg config.Config) error {
+	tg, err := newTelegram(cfg)
+	if err != nil {
+		return err
+	}
+	if cfg.TelegramChatID == 0 {
+		return errors.New("TELEGRAM_CHAT_ID is not set (run telegram-setup)")
+	}
+	if err := tg.SendMessage(ctx, cfg.TelegramChatID, "<b>Test message</b> from wispr-telegram assistant"); err != nil {
+		return err
+	}
+	fmt.Println("sent")
 	return nil
 }

@@ -12,8 +12,8 @@ Stages are sequential; do not start Stage 3+ until Stage 1 is confirmed against 
 
 ## Stage 2 — Telegram
 
-- [ ] `sendMessage` (HTML), 429 handling, timeouts.
-- [ ] `telegram-setup`: capture chat id on `/start`.
+- [x] `sendMessage` (HTML), 429 handling, timeouts.
+- [x] `telegram-setup`: capture chat id on `/start` (needs your bot token, see `.env.example`).
 - [ ] Test message to the allowed chat only.
 
 ## Stage 3 — Meeting processing
