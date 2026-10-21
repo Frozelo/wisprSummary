@@ -26,7 +26,7 @@ import (
 const usage = `usage: bot <command>
 
 commands:
-  run      poll Wispr and send new meeting summaries to Telegram
+  run      poll Wispr and send new meeting summaries to Telegram (--once: a single pass, for cron)
   login    authorize Wispr Flow access in the browser (one-off)
   status   show whether a Wispr session is stored
   tools    list Wispr MCP tools with their input schemas
@@ -53,7 +53,7 @@ func main() {
 
 	switch os.Args[1] {
 	case "run":
-		err = run(ctx, cfg)
+		err = run(ctx, cfg, os.Args[2:])
 	case "login":
 		err = wispr.Login(ctx, wispr.LoginOptions{
 			MCPURL: cfg.WisprMCPURL,
@@ -221,7 +221,14 @@ func preview(ctx context.Context, cfg config.Config, args []string) error {
 	return nil
 }
 
-func run(ctx context.Context, cfg config.Config) error {
+func run(ctx context.Context, cfg config.Config, args []string) error {
+	once := false
+	for _, a := range args {
+		if a != "--once" {
+			return fmt.Errorf("unknown argument %q (usage: bot run [--once])", a)
+		}
+		once = true
+	}
 	tg, err := newTelegram(cfg)
 	if err != nil {
 		return err
@@ -245,6 +252,9 @@ func run(ctx context.Context, cfg config.Config) error {
 		Loc:      cfg.Location,
 	}, newClient(cfg), telegram.Chat{C: tg, ID: cfg.TelegramChatID}, db, slog.Default())
 
+	if once {
+		return svc.RunOnce(ctx)
+	}
 	slog.Info("started", "poll_interval", cfg.PollInterval)
 	err = svc.Run(ctx)
 	slog.Info("stopped")

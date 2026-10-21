@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -41,6 +42,9 @@ type Store interface {
 	Release(ctx context.Context, id string) error
 	Watermark(ctx context.Context) (time.Time, bool, error)
 	SetWatermark(ctx context.Context, t time.Time) error
+	GetKV(ctx context.Context, key string) (string, bool, error)
+	SetKV(ctx context.Context, key, value string) error
+	DeleteKV(ctx context.Context, key string) error
 }
 
 type Config struct {
@@ -95,7 +99,6 @@ func NewService(cfg Config, src Source, n Notifier, st Store, log *slog.Logger) 
 // Run polls until ctx is cancelled. Errors never stop the loop; a lost Wispr
 // login triggers a single Telegram alert until polling works again.
 func (s *Service) Run(ctx context.Context) error {
-	alerted := false
 	t := time.NewTimer(0)
 	defer t.Stop()
 	for {
@@ -104,21 +107,43 @@ func (s *Service) Run(ctx context.Context) error {
 			return nil
 		case <-t.C:
 		}
-		err := s.Tick(ctx)
-		switch {
-		case err == nil:
-			alerted = false
-		case ctx.Err() != nil:
-			return nil
-		case errors.Is(err, wispr.ErrLoginRequired):
-			s.log.Error("wispr login required; run `bot login`")
-			if !alerted {
-				alerted = s.notify.Send(ctx, "⚠️ Wispr login expired. Run <code>bot login</code> to resume summaries.") == nil
-			}
-		default:
-			s.log.Error("poll failed", "err", err)
-		}
+		s.handleTick(ctx, s.Tick(ctx))
 		t.Reset(s.cfg.Interval)
+	}
+}
+
+// RunOnce performs a single poll cycle, for schedulers that start a fresh
+// process per run (CI cron). A lost login is reported to Telegram once and is
+// not an error exit; any other failure is returned.
+func (s *Service) RunOnce(ctx context.Context) error {
+	err := s.Tick(ctx)
+	s.handleTick(ctx, err)
+	if err != nil && !errors.Is(err, wispr.ErrLoginRequired) {
+		return err
+	}
+	return nil
+}
+
+const loginAlertKey = "login_alert"
+
+// handleTick logs a tick's outcome and manages the "login expired" alert. The
+// alert flag lives in the store so it survives restarts and one-shot runs.
+func (s *Service) handleTick(ctx context.Context, err error) {
+	switch {
+	case err == nil:
+		if _, ok, _ := s.store.GetKV(ctx, loginAlertKey); ok {
+			_ = s.store.DeleteKV(ctx, loginAlertKey)
+		}
+	case ctx.Err() != nil:
+	case errors.Is(err, wispr.ErrLoginRequired):
+		s.log.Error("wispr login required; run `bot login`")
+		if _, ok, _ := s.store.GetKV(ctx, loginAlertKey); !ok {
+			if s.notify.Send(ctx, "⚠️ Wispr login expired. Run <code>bot login</code> to resume summaries.") == nil {
+				_ = s.store.SetKV(ctx, loginAlertKey, "1")
+			}
+		}
+	default:
+		s.log.Error("poll failed", "err", err)
 	}
 }
 
@@ -277,11 +302,11 @@ func (s *Service) process(ctx context.Context, info wispr.MeetingInfo) error {
 		Title: m.Title, Start: m.Start, ShareLink: m.ShareLink, Summary: m.Summary,
 	}, s.cfg.Loc)
 	// Resume after the parts already delivered so a retry never repeats them.
-	for i := s.sent[info.ID]; i < len(msgs); i++ {
+	for i := s.partsSent(ctx, info.ID); i < len(msgs); i++ {
 		if err := s.notify.Send(ctx, msgs[i]); err != nil {
 			return fmt.Errorf("send part %d/%d: %w", i+1, len(msgs), err)
 		}
-		s.sent[info.ID] = i + 1
+		s.setPartsSent(ctx, info.ID, i+1)
 	}
 	if err := s.markProcessed(ctx, info); err != nil {
 		return fmt.Errorf("mark processed (message was sent): %w", err)
@@ -290,11 +315,33 @@ func (s *Service) process(ctx context.Context, info wispr.MeetingInfo) error {
 	return nil
 }
 
+// partsSent returns how many message parts of a meeting were already delivered
+// (kept in the store so one-shot runs and restarts also resume mid-meeting).
+func (s *Service) partsSent(ctx context.Context, id string) int {
+	if n, ok := s.sent[id]; ok {
+		return n
+	}
+	if v, ok, _ := s.store.GetKV(ctx, "parts:"+id); ok {
+		n, _ := strconv.Atoi(v)
+		s.sent[id] = n
+		return n
+	}
+	return 0
+}
+
+func (s *Service) setPartsSent(ctx context.Context, id string, n int) {
+	s.sent[id] = n
+	if err := s.store.SetKV(ctx, "parts:"+id, strconv.Itoa(n)); err != nil {
+		s.log.Error("persist delivered parts", "id", id, "err", err)
+	}
+}
+
 // markProcessed records a meeting even when ctx was just cancelled (shutdown
 // right after a send), otherwise the next start would deliver it again.
 func (s *Service) markProcessed(ctx context.Context, m wispr.MeetingInfo) error {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), dbTimeout)
 	defer cancel()
+	_ = s.store.DeleteKV(ctx, "parts:"+m.ID)
 	return s.store.MarkProcessed(ctx, m.ID, m.Title, s.now())
 }
 

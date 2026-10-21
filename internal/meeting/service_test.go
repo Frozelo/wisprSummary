@@ -476,3 +476,73 @@ func TestListErrorKeepsWatermark(t *testing.T) {
 		t.Fatalf("watermark moved on error: %v -> %v", before, after)
 	}
 }
+
+func TestRunOnceAlertsOnlyOnceAcrossProcesses(t *testing.T) {
+	e := newEnv(t)
+	cn := &countingNotifier{}
+	e.svc.notify = cn
+	e.src.searchErr = fmt.Errorf("initialize: %w", wispr.ErrLoginRequired)
+
+	for i := 0; i < 3; i++ { // three cron runs, each a fresh process on the same state
+		e.open(t)
+		e.svc.notify = cn
+		if err := e.svc.RunOnce(context.Background()); err != nil {
+			t.Fatalf("login loss must not be an error exit: %v", err)
+		}
+	}
+	if cn.count() != 1 {
+		t.Fatalf("alerts = %d, want 1", cn.count())
+	}
+
+	e.src.searchErr = nil // user logged in again
+	e.open(t)
+	e.svc.notify = cn
+	if err := e.svc.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	e.src.searchErr = fmt.Errorf("initialize: %w", wispr.ErrLoginRequired)
+	e.open(t)
+	e.svc.notify = cn
+	e.svc.RunOnce(context.Background())
+	if cn.count() != 2 {
+		t.Fatalf("alert after a new login loss: alerts = %d, want 2", cn.count())
+	}
+}
+
+func TestRunOnceReturnsOtherErrors(t *testing.T) {
+	e := newEnv(t)
+	e.src.searchErr = errors.New("wispr 502")
+	if err := e.svc.RunOnce(context.Background()); err == nil {
+		t.Fatal("expected the error so the CI job is marked failed")
+	}
+}
+
+func TestPartialDeliverySurvivesProcessRestart(t *testing.T) {
+	e := newEnv(t)
+	e.tick(t, 0)
+	e.src.add("big", t0.Add(time.Minute), true, longSummary())
+	calls := 0
+	e.n.fail = func(string) error {
+		calls++
+		if calls == 2 {
+			return errors.New("telegram hiccup")
+		}
+		return nil
+	}
+	e.tick(t, 2*time.Minute)
+	if len(e.n.sent) != 1 {
+		t.Fatalf("sent %d", len(e.n.sent))
+	}
+	e.open(t) // next cron run: new process, in-memory state gone
+	e.tick(t, 5*time.Minute)
+	seen := map[string]bool{}
+	for _, m := range e.n.sent {
+		if seen[m] {
+			t.Fatal("a part was delivered twice after restart")
+		}
+		seen[m] = true
+	}
+	if done, _ := e.st.IsProcessed(context.Background(), "big"); !done {
+		t.Fatal("not completed after restart")
+	}
+}

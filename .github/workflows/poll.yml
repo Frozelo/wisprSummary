@@ -1,0 +1,80 @@
+# Polls Wispr Flow and sends new meeting summaries to Telegram.
+#
+# A scheduled GitHub Actions run is a stand-in for an always-on server: handy
+# for trying the bot for free, but runs can start 5-15 minutes late. State
+# (SQLite + Wispr session) is kept between runs in the Actions cache, encrypted
+# with the STATE_KEY secret, because this repository is public.
+name: poll
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      backfill_hours:
+        description: "First run only: also send meetings modified in the last N hours (0 = none)"
+        default: "0"
+
+concurrency:
+  group: poll
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      DATA_DIR: data
+      STATE_FILE: state.tar.enc
+      STATE_KEY: ${{ secrets.STATE_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Restore state
+        uses: actions/cache/restore@v4
+        with:
+          path: state.tar.enc
+          key: state-none
+          restore-keys: state-
+
+      - name: Unpack state (or bootstrap the Wispr login)
+        env:
+          WISPR_TOKEN_B64: ${{ secrets.WISPR_TOKEN_B64 }}
+        run: |
+          if [ -f state.tar.enc ]; then
+            .github/scripts/state.sh unpack
+          else
+            echo "No saved state: starting fresh from the WISPR_TOKEN_B64 secret"
+            mkdir -p data && chmod 700 data
+            echo "$WISPR_TOKEN_B64" | base64 -d > data/wispr_token.json
+            chmod 600 data/wispr_token.json
+          fi
+
+      - name: Poll once
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          BACKFILL_HOURS: ${{ inputs.backfill_hours || '0' }}
+          TIMEZONE: ${{ vars.TIMEZONE }}
+        run: go run ./cmd/bot run --once
+
+      # Save even when the poll failed: a refreshed Wispr token must not be lost.
+      - name: Pack state
+        if: always()
+        run: |
+          rm -f state.tar.enc
+          .github/scripts/state.sh pack
+
+      - name: Save state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: state.tar.enc
+          key: state-${{ github.run_id }}-${{ github.run_attempt }}
