@@ -15,6 +15,7 @@ const (
 	maxTopics      = 4
 	maxLine        = 400 // a single bullet is never longer, so one always fits a message
 	maxDecisionsSm = 5
+	maxTitle       = 200
 )
 
 // Meeting is the input for one notification.
@@ -34,7 +35,7 @@ func Format(m Meeting, loc *time.Location) []string {
 	}
 	p := Parse(m.Summary)
 
-	head := []string{"<b>Встреча:</b> " + esc(orDefault(m.Title, "Без названия"))}
+	head := []string{"<b>Встреча:</b> " + esc(trunc(orDefault(m.Title, "Без названия"), maxTitle))}
 	if !m.Start.IsZero() {
 		head = append(head, "<b>Дата:</b> "+m.Start.In(loc).Format("02.01.2006"))
 	}
@@ -131,7 +132,8 @@ func taskLines(ts []Task) []string {
 }
 
 // pack joins head+body+foot into one message, or splits the body by lines
-// into several when it exceeds MaxMessageLen. The footer goes last.
+// into several when it exceeds MaxMessageLen. The footer goes last. A
+// continuation message repeats the heading it was cut under (e.g. the assignee).
 func pack(head, body, foot []string) []string {
 	if one := strings.Join(join(head, body, foot), "\n"); utf8.RuneCountInString(one) <= MaxMessageLen {
 		return []string{one}
@@ -139,16 +141,28 @@ func pack(head, body, foot []string) []string {
 	var msgs []string
 	cur := append([]string(nil), head...)
 	size := runes(cur)
+	lastHeading := ""
 	for _, line := range join(body, foot) {
 		if size+utf8.RuneCountInString(line)+1 > MaxMessageLen {
 			msgs = append(msgs, strings.Join(cur, "\n"))
 			cur = []string{"<i>(продолжение)</i>"}
+			if lastHeading != "" && !isHeading(line) {
+				cur = append(cur, lastHeading)
+			}
 			size = runes(cur)
+		}
+		if isHeading(line) {
+			lastHeading = line
 		}
 		cur = append(cur, line)
 		size += utf8.RuneCountInString(line) + 1
 	}
 	return append(msgs, strings.Join(cur, "\n"))
+}
+
+// isHeading reports whether a line is one of our "<b>…:</b>" section or group headings.
+func isHeading(line string) bool {
+	return strings.HasPrefix(line, "<b>") && strings.HasSuffix(line, ":</b>")
 }
 
 func runes(lines []string) int {

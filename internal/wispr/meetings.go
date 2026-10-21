@@ -24,6 +24,30 @@ type MeetingPage struct {
 	Meetings   []MeetingInfo `json:"meetings"`
 	HasMore    bool          `json:"has_more"`
 	NextCursor string        `json:"next_cursor"`
+	Skipped    int           `json:"-"` // items that could not be decoded
+}
+
+// UnmarshalJSON decodes items one by one so a single malformed meeting (for
+// example an unparsable timestamp) cannot hide the rest of the page.
+func (p *MeetingPage) UnmarshalJSON(b []byte) error {
+	var raw struct {
+		Meetings   []json.RawMessage `json:"meetings"`
+		HasMore    bool              `json:"has_more"`
+		NextCursor string            `json:"next_cursor"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	*p = MeetingPage{HasMore: raw.HasMore, NextCursor: raw.NextCursor}
+	for _, r := range raw.Meetings {
+		var m MeetingInfo
+		if json.Unmarshal(r, &m) != nil {
+			p.Skipped++
+			continue
+		}
+		p.Meetings = append(p.Meetings, m)
+	}
+	return nil
 }
 
 // Meeting is a get_meeting result. The transcript is never requested.
@@ -33,11 +57,11 @@ type Meeting struct {
 	Todos   []json.RawMessage `json:"todos"`
 }
 
-func (c *Client) SearchMeetings(ctx context.Context, since time.Time, cursor string, limit int) (MeetingPage, error) {
+// SearchMeetings lists meetings, most recently modified first. It deliberately
+// has no date filter: Wispr's since/until select by meeting START time, which
+// would miss a meeting that started earlier but was finalized later.
+func (c *Client) SearchMeetings(ctx context.Context, cursor string, limit int) (MeetingPage, error) {
 	args := map[string]any{"limit": limit}
-	if !since.IsZero() {
-		args["since"] = since.UTC().Format(time.RFC3339)
-	}
 	if cursor != "" {
 		args["cursor"] = cursor
 	}

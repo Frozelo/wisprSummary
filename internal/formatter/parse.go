@@ -9,6 +9,7 @@ package formatter
 import (
 	"regexp"
 	"strings"
+	"unicode"
 )
 
 // Task is one action item; Assignee is empty when Wispr did not name one.
@@ -30,27 +31,36 @@ type Parsed struct {
 	Tasks     []Task
 }
 
-// Heading keywords (lowercase substrings). Extend here for new languages.
+// Heading phrases (lowercase). A section is a task/decision list only when its
+// heading STARTS with one of them, so topics like "Первые шаги онбординга" or
+// "Решение проблемы с JWT" are not misread. Extend here for new languages.
 var (
-	taskHeadings     = []string{"шаги", "next step", "action item", "to-do", "todo"}
-	decisionHeadings = []string{"решени", "decision"}
+	taskHeadings     = []string{"следующие шаги", "дальнейшие шаги", "next step", "action item", "to-do", "todo"}
+	decisionHeadings = []string{"принятые решения", "решения", "ключевые решения", "decisions", "key decisions"}
 )
 
 var (
 	headingRe  = regexp.MustCompile(`^\s{0,3}#{1,6}\s+(.*?)\s*#*\s*$`)
-	itemRe     = regexp.MustCompile(`^\s*(?:[-*+•]|\d+[.)])\s+(.*)$`)
+	itemRe     = regexp.MustCompile(`^(\s*)(?:[-*+•]|\d+[.)])\s+(.*)$`)
 	checkboxRe = regexp.MustCompile(`^\[[ xX]\]\s*`)
 	assigneeRe = regexp.MustCompile(`^\(([^()]{1,60})\)\s*(.+)$`)
 	numberRe   = regexp.MustCompile(`^\d+(\.\d+)*[.)]?\s+`)
 	linkRe     = regexp.MustCompile(`\[([^\]]+)\]\([^)]*\)`)
-	boldRe     = regexp.MustCompile(`\*\*|__`)
-	italicRe   = regexp.MustCompile(`\*([^*\n]+)\*`)
-	spacesRe   = regexp.MustCompile(`\s+`)
+	boldRe     = regexp.MustCompile(`\*\*`)
+	// Emphasis only when the asterisks hug text and sit at word boundaries, so
+	// globs like "*.log и *.tmp" are left alone.
+	italicRe = regexp.MustCompile(`(^|[\s(])\*([^*\s](?:[^*\n]*[^*\s])?)\*($|[\s).,;:!?])`)
+	spacesRe = regexp.MustCompile(`\s+`)
 )
+
+type item struct {
+	text string
+	subs []string // indented sub-bullets
+}
 
 type section struct {
 	heading string
-	items   []string
+	items   []item
 }
 
 // Parse extracts topics, decisions and tasks from a markdown summary.
@@ -64,15 +74,25 @@ func Parse(summary string) Parsed {
 		switch kindOf(s.heading) {
 		case kindTasks:
 			for _, it := range s.items {
-				p.Tasks = append(p.Tasks, parseTask(it))
+				p.Tasks = append(p.Tasks, parseTask(it.full()))
 			}
 		case kindDecisions:
-			p.Decisions = append(p.Decisions, s.items...)
+			for _, it := range s.items {
+				p.Decisions = append(p.Decisions, it.full())
+			}
 		default:
-			p.Topics = append(p.Topics, Topic{Heading: s.heading, Gist: s.items[0]})
+			p.Topics = append(p.Topics, Topic{Heading: s.heading, Gist: s.items[0].text})
 		}
 	}
 	return p
+}
+
+// full joins an item with its sub-bullets so details stay with their parent.
+func (it item) full() string {
+	if len(it.subs) == 0 {
+		return it.text
+	}
+	return it.text + " — " + strings.Join(it.subs, "; ")
 }
 
 func splitSections(md string) []section {
@@ -89,11 +109,21 @@ func splitSections(md string) []section {
 			cur = section{heading: clean(numberRe.ReplaceAllString(clean(m[1]), ""))}
 			continue
 		}
-		if m := itemRe.FindStringSubmatch(line); m != nil {
-			if t := clean(checkboxRe.ReplaceAllString(strings.TrimSpace(m[1]), "")); t != "" {
-				cur.items = append(cur.items, t)
-			}
+		m := itemRe.FindStringSubmatch(line)
+		if m == nil {
+			continue
 		}
+		text := clean(checkboxRe.ReplaceAllString(strings.TrimSpace(m[2]), ""))
+		if text == "" {
+			continue
+		}
+		indent := len(strings.ReplaceAll(m[1], "\t", "    "))
+		if indent >= 2 && len(cur.items) > 0 {
+			last := &cur.items[len(cur.items)-1]
+			last.subs = append(last.subs, text)
+			continue
+		}
+		cur.items = append(cur.items, item{text: text})
 	}
 	flush()
 	return secs
@@ -108,19 +138,19 @@ const (
 )
 
 func kindOf(heading string) kind {
-	h := strings.ToLower(heading)
-	if containsAny(h, taskHeadings) {
+	h := strings.ToLower(strings.TrimSpace(heading))
+	if hasAnyPrefix(h, taskHeadings) {
 		return kindTasks
 	}
-	if containsAny(h, decisionHeadings) {
+	if hasAnyPrefix(h, decisionHeadings) {
 		return kindDecisions
 	}
 	return kindTopic
 }
 
-func containsAny(s string, subs []string) bool {
-	for _, sub := range subs {
-		if strings.Contains(s, sub) {
+func hasAnyPrefix(s string, prefixes []string) bool {
+	for _, p := range prefixes {
+		if strings.HasPrefix(s, p) {
 			return true
 		}
 	}
@@ -128,17 +158,37 @@ func containsAny(s string, subs []string) bool {
 }
 
 func parseTask(item string) Task {
-	if m := assigneeRe.FindStringSubmatch(item); m != nil {
+	if m := assigneeRe.FindStringSubmatch(item); m != nil && looksLikeName(m[1]) {
 		return Task{Assignee: strings.TrimSpace(m[1]), Text: strings.TrimSpace(m[2])}
 	}
 	return Task{Text: item}
 }
 
-// clean strips inline markdown (links, bold, italics, code) and collapses whitespace.
+var nameSepRe = regexp.MustCompile(`\s*(?:,|&|\s+и\s+|\s+and\s+)\s*`)
+
+// looksLikeName accepts "Иван", "Иван, Дмитрий", "Иван и Дмитрий", "Все
+// участники" and rejects remarks such as "(если успеем)" or "(срочно)": each
+// listed name must start with an uppercase letter, at most 8 words in total.
+func looksLikeName(s string) bool {
+	if len(strings.Fields(s)) > 8 {
+		return false
+	}
+	for _, part := range nameSepRe.Split(strings.TrimSpace(s), -1) {
+		r := []rune(part)
+		if len(r) == 0 || !unicode.IsUpper(r[0]) {
+			return false
+		}
+	}
+	return true
+}
+
+// clean strips inline markdown (links, bold, emphasis, code) and collapses whitespace.
 func clean(s string) string {
 	s = linkRe.ReplaceAllString(s, "$1")
 	s = boldRe.ReplaceAllString(s, "")
-	s = italicRe.ReplaceAllString(s, "$1")
+	for range 2 { // second pass catches emphasis sharing a boundary: "*a* *b*"
+		s = italicRe.ReplaceAllString(s, "${1}${2}${3}")
+	}
 	s = strings.ReplaceAll(s, "`", "")
 	return strings.TrimSpace(spacesRe.ReplaceAllString(s, " "))
 }
