@@ -231,3 +231,45 @@ func TestSplitRepeatsAssigneeHeading(t *testing.T) {
 		}
 	}
 }
+
+const withIntro = `Тестовая встреча: Иван распределил задачи (API, бэкенд) и обозначил план.
+
+### Распределение задач
+- Дима отвечает за API.
+- По биллингу: Антон делает дизайн.
+
+### План тестирования
+- Нужен тестовый стенд.
+
+### Следующие шаги
+- (Антон) Сделать дизайн
+`
+
+func TestParseCapturesIntroParagraph(t *testing.T) {
+	p := Parse(withIntro)
+	if p.Overview != "Тестовая встреча: Иван распределил задачи (API, бэкенд) и обозначил план." {
+		t.Fatalf("overview = %q", p.Overview)
+	}
+	if len(p.Tasks) != 1 || len(p.Topics) != 2 {
+		t.Fatalf("parsed %+v", p)
+	}
+	if Parse("### Следующие шаги\n- (A) x\n").Overview != "" {
+		t.Fatal("no intro expected")
+	}
+}
+
+func TestFormatUsesIntroAsRecap(t *testing.T) {
+	m := Format(Meeting{Title: "T", Start: start, Summary: withIntro}, time.UTC)[0]
+	for _, want := range []string{
+		"<b>Краткие итоги:</b>\nТестовая встреча: Иван распределил задачи (API, бэкенд) и обозначил план.",
+		"• Распределение задач",
+		"• План тестирования",
+	} {
+		if !strings.Contains(m, want) {
+			t.Errorf("missing %q in:\n%s", want, m)
+		}
+	}
+	if strings.Contains(m, "Дима отвечает за API") {
+		t.Errorf("first bullets must not be repeated when an intro exists:\n%s", m)
+	}
+}

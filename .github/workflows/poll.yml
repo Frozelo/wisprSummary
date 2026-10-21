@@ -63,6 +63,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           BACKFILL_HOURS: ${{ inputs.backfill_hours || '0' }}
           TIMEZONE: ${{ vars.TIMEZONE }}
+          SELF_NAME: ${{ vars.SELF_NAME }}
         run: go run ./cmd/bot run --once
 
       # Save even when the poll failed: a refreshed Wispr token must not be lost.

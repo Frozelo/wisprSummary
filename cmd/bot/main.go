@@ -196,9 +196,16 @@ func preview(ctx context.Context, cfg config.Config, args []string) error {
 	if send && cfg.TelegramChatID == 0 {
 		return errors.New("TELEGRAM_CHAT_ID is not set (run telegram-setup)")
 	}
-	m, err := newClient(cfg).GetMeeting(ctx, args[0])
+	client := newClient(cfg)
+	m, err := client.GetMeeting(ctx, args[0])
 	if err != nil {
 		return err
+	}
+	if cfg.SelfName != "" {
+		if acc, err := client.AccountName(ctx); err == nil && acc != "" {
+			m.Title = strings.ReplaceAll(m.Title, acc, cfg.SelfName)
+			m.Summary = strings.ReplaceAll(m.Summary, acc, cfg.SelfName)
+		}
 	}
 	msgs := formatter.Format(formatter.Meeting{
 		Title: m.Title, Start: m.Start, ShareLink: m.ShareLink, Summary: m.Summary,
@@ -250,6 +257,7 @@ func run(ctx context.Context, cfg config.Config, args []string) error {
 		Lookback: cfg.Lookback,
 		Backfill: cfg.Backfill,
 		Loc:      cfg.Location,
+		SelfName: cfg.SelfName,
 	}, newClient(cfg), telegram.Chat{C: tg, ID: cfg.TelegramChatID}, db, slog.Default())
 
 	if once {

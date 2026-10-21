@@ -28,6 +28,7 @@ const (
 type Source interface {
 	SearchMeetings(ctx context.Context, cursor string, limit int) (wispr.MeetingPage, error)
 	GetMeeting(ctx context.Context, id string) (wispr.Meeting, error)
+	AccountName(ctx context.Context) (string, error)
 }
 
 // Notifier delivers one HTML message to the owner's chat.
@@ -55,6 +56,9 @@ type Config struct {
 	SummaryGrace time.Duration // wait this long after a meeting ends for its summary
 	PageSize     int
 	Loc          *time.Location
+	// SelfName replaces the Wispr account name in titles and summaries (Wispr
+	// writes the account owner's display name where the speaker said "I").
+	SelfName string
 }
 
 func (c *Config) setDefaults() {
@@ -89,6 +93,7 @@ type Service struct {
 	now      func() time.Time
 	failures map[string]*failure
 	sent     map[string]int // meeting id -> message parts already delivered
+	account  string         // cached Wispr account name
 }
 
 func NewService(cfg Config, src Source, n Notifier, st Store, log *slog.Logger) *Service {
@@ -285,6 +290,7 @@ func (s *Service) process(ctx context.Context, info wispr.MeetingInfo) error {
 	if err != nil {
 		return fmt.Errorf("get meeting: %w", err)
 	}
+	m.Title, m.Summary = s.applySelfName(ctx, m.Title), s.applySelfName(ctx, m.Summary)
 	if strings.TrimSpace(m.Summary) == "" {
 		// Wait for the summary relative to when the meeting became final
 		// (modified_at), not when it ended: processing can lag the end by far more than the grace.
@@ -313,6 +319,22 @@ func (s *Service) process(ctx context.Context, info wispr.MeetingInfo) error {
 	}
 	s.log.Info("meeting sent", "id", info.ID)
 	return nil
+}
+
+// applySelfName swaps the Wispr account name for the configured SelfName.
+func (s *Service) applySelfName(ctx context.Context, text string) string {
+	if s.cfg.SelfName == "" || text == "" {
+		return text
+	}
+	if s.account == "" {
+		name, err := s.src.AccountName(ctx)
+		if err != nil || name == "" {
+			s.log.Warn("could not read the Wispr account name; SELF_NAME not applied", "err", err)
+			return text
+		}
+		s.account = name
+	}
+	return strings.ReplaceAll(text, s.account, s.cfg.SelfName)
 }
 
 // partsSent returns how many message parts of a meeting were already delivered

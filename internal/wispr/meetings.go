@@ -90,3 +90,15 @@ func (c *Client) callInto(ctx context.Context, tool string, args map[string]any,
 	}
 	return json.Unmarshal(raw, out)
 }
+
+// AccountName returns the display name of the signed-in Wispr user, which Wispr
+// uses as the speaker label (and in summaries) for the account owner.
+func (c *Client) AccountName(ctx context.Context) (string, error) {
+	var out struct {
+		Name string `json:"name"`
+	}
+	if err := c.callInto(ctx, "get_account_info", nil, &out); err != nil {
+		return "", err
+	}
+	return out.Name, nil
+}
