@@ -67,3 +67,24 @@ func TestClaimIsExclusiveUntilReleasedOrExpired(t *testing.T) {
 		t.Fatal("MarkProcessed should clear the claim")
 	}
 }
+
+func TestKV(t *testing.T) {
+	ctx := context.Background()
+	s, err := Open(filepath.Join(t.TempDir(), "state.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, ok, _ := s.GetKV(ctx, "k"); ok {
+		t.Fatal("unexpected value")
+	}
+	s.SetKV(ctx, "k", "1")
+	s.SetKV(ctx, "k", "2")
+	if v, ok, _ := s.GetKV(ctx, "k"); !ok || v != "2" {
+		t.Fatalf("v=%q ok=%v", v, ok)
+	}
+	s.DeleteKV(ctx, "k")
+	if _, ok, _ := s.GetKV(ctx, "k"); ok {
+		t.Fatal("not deleted")
+	}
+}

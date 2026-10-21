@@ -107,3 +107,24 @@ func (s *SQLite) SetWatermark(ctx context.Context, t time.Time) error {
 		watermarkKey, t.UTC().Format(time.RFC3339Nano))
 	return err
 }
+
+// GetKV reads a small persisted value.
+func (s *SQLite) GetKV(ctx context.Context, key string) (string, bool, error) {
+	var v string
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM kv WHERE key = ?`, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return v, err == nil, err
+}
+
+func (s *SQLite) SetKV(ctx context.Context, key, value string) error {
+	_, err := s.db.ExecContext(ctx,
+		`INSERT INTO kv (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, key, value)
+	return err
+}
+
+func (s *SQLite) DeleteKV(ctx context.Context, key string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM kv WHERE key = ?`, key)
+	return err
+}

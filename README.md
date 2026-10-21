@@ -38,6 +38,19 @@ docker build -t wispr-telegram .
 docker run --env-file .env -v "$PWD/data:/data" wispr-telegram
 ```
 
+## Try it for free on GitHub Actions
+
+No server needed for a trial: `.github/workflows/poll.yml` runs `bot run --once` every ~5 minutes (GitHub may start scheduled runs 5–15 minutes late) and keeps the state between runs in the Actions cache, **encrypted** with the `STATE_KEY` secret because the repository is public.
+
+Repository secrets: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `STATE_KEY` (any random string) and `WISPR_TOKEN_B64` (`base64 < data/wispr_token.json`, used only when there is no saved state). Optional repository variable: `TIMEZONE`.
+
+```bash
+gh workflow run poll.yml -f backfill_hours=24   # first run only: also send the last 24h
+gh run list --workflow poll.yml                  # check the runs
+```
+
+Notes: do not run the bot locally with the same Wispr session at the same time (a refreshed token may invalidate the other copy); if the cache is evicted (7 days unused) the session is re-seeded from `WISPR_TOKEN_B64`, which may require `bot login` again; GitHub disables schedules after 60 days without repository activity. For permanent use run the service on a VPS instead.
+
 ## Configuration
 
 | Variable | Default | Description |
